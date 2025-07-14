@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "MIDIUSB.h"
 #include "SAMD51_InterruptTimer.h"
 
 // vco variables
@@ -99,45 +100,15 @@ float decay_table[1024] = {
 };
 
 uint8_t sequence[16] = {
-  13 | 1<<6 | 0 << 7, // midi note -23 | accent | slide
-  13 | 0<<6 | 0 << 7,
-  13 | 1<<6 | 0 << 7,
-  13 | 1<<6 | 0 << 7,
-  13 | 1<<6 | 1 << 7,
-  13 | 0<<6 | 0 << 7,
-  11 | 1<<6 | 1 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 1<<6 | 1 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7,
-  20 | 1<<6 | 1 << 7,
-  20 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7
+  //#include "default.h"
+  //#include "everybody303.h"
+  #include "riser.h"
 };
 
-//uint8_t sequence[16] = {
-//  11 | 1<<6 | 1 << 7, // midi note -23 | accent | slide
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7
-//};
-
 // sequencer
-uint32_t tempo = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
+uint32_t BPM = 130;
+
+uint32_t tempo = 600; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
 uint32_t tempo_counter = 0;
 uint8_t step_counter = 0;
 uint8_t current_step = 0;
@@ -158,11 +129,77 @@ void setup() {
 //  // put your setup code here, to run once:
   pinMode(13, OUTPUT);
   TC.startTimer(20, myISR); // 20 usec
+
+  // midi
+  Serial.begin(115200);
 }
 
 int i = 0;
 
+void noteOn(byte channel, byte pitch, byte velocity) {
+  midiEventPacket_t noteOn = {0x09, 0x90 | channel, pitch, velocity};
+  MidiUSB.sendMIDI(noteOn);
+}
+
+void noteOff(byte channel, byte pitch, byte velocity) {
+  midiEventPacket_t noteOff = {0x08, 0x80 | channel, pitch, velocity};
+  MidiUSB.sendMIDI(noteOff);
+}
+
+// midi
+//Pulse per quarter note. Each beat has 24 pulses.
+//Tempo is based on software inner BPM.
+int ppqn = 0;
+int pulse = 0;
+int step_reset = 0;
+int step_progress = 0;
+
+uint8_t MIDI_START = 0xFA;
+uint8_t MIDI_CONTINUE = 0xFB;
+uint8_t MIDI_STOP = 0xFC;
+uint8_t MIDI_PULSE =  0xF8;
+
 void loop() {
+  // midi
+  midiEventPacket_t rx;
+  do {
+    rx = MidiUSB.read();
+
+    //Count pulses and send note 
+    if(rx.byte1 == MIDI_PULSE){
+       ++ppqn;
+       pulse = 1;
+       /*
+       if(ppqn == 6){
+          // 1/16th step
+          noteOn(1,48,127);
+          step_progress = 1;
+          MidiUSB.flush(); 
+          ppqn = 0;
+       };
+       */
+    }
+    //Clock start byte
+    else if(rx.byte1 == MIDI_START){
+      //
+      noteOn(1,60,0);
+      step_progress = 1;
+      MidiUSB.flush();
+      ppqn = 0;
+    }
+    //Clock stop byte
+    else if(rx.byte1 == MIDI_STOP){
+      //
+      noteOff(1,48,0);
+      noteOff(1,60,0);
+      step_reset = 1;
+      step_progress = 0;
+      MidiUSB.flush();
+      ppqn = 0;
+    };
+    
+  } while (rx.header != 0);
+
   // read control interface
   uint16_t temp7 = analogRead(A2); // reso
   resonance = 0.005078125*temp7; // reso 0.005078125 is stock
@@ -400,11 +437,15 @@ average = 4*cap_out;
   }
 
   // play pattern sequence
-  tempo_counter++;
-  if (tempo_counter >= tempo) {
-    tempo_counter = 0;
-    step_counter++;
-    if (step_counter >= 12) {
+  //tempo_counter++;
+  //if (tempo_counter >= tempo) {
+  if(pulse=1) {
+    pulse=0;
+    //tempo_counter = 0;
+    //step_counter++;
+    //if (step_counter >= 12) {
+    if (ppqn >= 6) {
+      ppqn=0;
       step_counter = 0;
       current_step++;
       if (current_step >= sequence_length) current_step = 0;
@@ -427,8 +468,8 @@ average = 4*cap_out;
         accent = accent_pot; // turn on accents
         vcf_env_decay = 0.9972f; // shorten vcf env decay to minimum
       }
-    }
-    else if (step_counter == 7) {
+    //} else if (step_counter == 7) {
+    } else if (ppqn == 3) {
       if ((current_note & 0x80) == 0) vca_env_state = 3; // only turn off notes with no slide
     }
   }
