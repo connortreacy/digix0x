@@ -1,5 +1,21 @@
 #include <Arduino.h>
+#include "MIDIUSB.h"
 #include "SAMD51_InterruptTimer.h"
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+volatile uint8_t scope_buffer[128]; // enough horizontal resolution
+volatile uint8_t scope_index = 0;
+volatile bool scope_ready = false;
+unsigned long last_refresh = 0;
 
 // vco variables
 float input = 0;
@@ -99,45 +115,15 @@ float decay_table[1024] = {
 };
 
 uint8_t sequence[16] = {
-  13 | 1<<6 | 0 << 7, // midi note -23 | accent | slide
-  13 | 0<<6 | 0 << 7,
-  13 | 1<<6 | 0 << 7,
-  13 | 1<<6 | 0 << 7,
-  13 | 1<<6 | 1 << 7,
-  13 | 0<<6 | 0 << 7,
-  11 | 1<<6 | 1 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 1<<6 | 1 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7,
-  20 | 1<<6 | 1 << 7,
-  20 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7,
-  11 | 0<<6 | 0 << 7
+  //#include "default.h"
+  #include "everybody303.h"
+  //#include "riser.h"
 };
 
-//uint8_t sequence[16] = {
-//  11 | 1<<6 | 1 << 7, // midi note -23 | accent | slide
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 1<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7,
-//  11 | 0<<6 | 1 << 7
-//};
-
 // sequencer
-uint32_t tempo = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
+uint32_t BPM = 130;
+
+uint32_t tempo = 600; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
 uint32_t tempo_counter = 0;
 uint8_t step_counter = 0;
 uint8_t current_step = 0;
@@ -157,12 +143,130 @@ void setup() {
 //  Serial.println("begin");
 //  // put your setup code here, to run once:
   pinMode(13, OUTPUT);
-  TC.startTimer(20, myISR); // 20 usec
+  //TC.startTimer(20, myISR); // 20 usec
+  // midi
+  Serial.begin(115200);
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+  display.display();
+  delay(2000); // Pause for 2 seconds
+
+  // Clear the buffer
+  display.clearDisplay();
 }
 
 int i = 0;
 
+void noteOn(byte channel, byte pitch, byte velocity) {
+  midiEventPacket_t noteOn = {0x09, 0x90 | channel, pitch, velocity};
+  MidiUSB.sendMIDI(noteOn);
+}
+
+void noteOff(byte channel, byte pitch, byte velocity) {
+  midiEventPacket_t noteOff = {0x08, 0x80 | channel, pitch, velocity};
+  MidiUSB.sendMIDI(noteOff);
+}
+
+// midi
+//Pulse per quarter note. Each beat has 24 pulses.
+//Tempo is based on software inner BPM.
+int ppqn = 0;
+int pulse = 0;
+int step_reset = 0;
+int step_progress = 0;
+
+uint8_t MIDI_START = 0xFA;
+uint8_t MIDI_CONTINUE = 0xFB;
+uint8_t MIDI_STOP = 0xFC;
+uint8_t MIDI_PULSE =  0xF8;
+
 void loop() {
+  // Clear screen
+      display.clearDisplay();
+
+      // Draw waveform
+      for (int i = 0; i < 127; ++i) {
+        //display.drawLine(i, 63 - local_buffer[i], i + 1, 63 - local_buffer[i + 1], SSD1306_WHITE);
+        display.drawLine(i, 63, i, 63 - (i % 32), SSD1306_WHITE); // test ramp
+        Serial.print("drawing waveform ");
+        Serial.println(i);
+      }
+
+      display.display();
+      //return;
+  unsigned long now = millis();
+  if (now - last_refresh > 16) {
+    last_refresh = now;
+
+    if (scope_ready) {
+      // Copy buffer safely
+      noInterrupts();
+      uint8_t local_buffer[128];
+      memcpy(local_buffer, (const void*)scope_buffer, sizeof(local_buffer));
+      scope_index = 0;
+      scope_ready = false;
+      interrupts();
+
+      // Clear screen
+      display.clearDisplay();
+
+      // Draw waveform
+      for (int i = 0; i < 127; ++i) {
+        display.drawLine(i, 63 - local_buffer[i], i + 1, 63 - local_buffer[i + 1], SSD1306_WHITE);
+        //display.drawLine(i, 63, i, 63 - (i % 32), SSD1306_WHITE); // test ramp
+        Serial.print("drawing waveform ");
+        Serial.println(i);
+      }
+
+      display.display();
+    }
+  }
+  // midi
+  midiEventPacket_t rx;
+  do {
+    rx = MidiUSB.read();
+
+    //Count pulses and send note 
+    if(rx.byte1 == MIDI_PULSE){
+       ++ppqn;
+       pulse = 1;
+       /*
+       if(ppqn == 6){
+          // 1/16th step
+          noteOn(1,48,127);
+          step_progress = 1;
+          MidiUSB.flush(); 
+          ppqn = 0;
+       };
+       */
+    }
+    //Clock start byte
+    else if(rx.byte1 == MIDI_START){
+      //
+      noteOn(1,60,0);
+      step_progress = 1;
+      MidiUSB.flush();
+      ppqn = 0;
+      pulse = 1;
+      current_step=0;
+    }
+    //Clock stop byte
+    else if(rx.byte1 == MIDI_STOP){
+      //
+      noteOff(1,48,0);
+      noteOff(1,60,0);
+      step_reset = 1;
+      step_progress = 0;
+      MidiUSB.flush();
+      ppqn = 0;
+      pulse = 0;
+      current_step=0;
+    };
+    
+  } while (rx.header != 0);
+
   // read control interface
   uint16_t temp7 = analogRead(A2); // reso
   resonance = 0.005078125*temp7; // reso 0.005078125 is stock
@@ -194,8 +298,23 @@ void loop() {
 }
 
 void myISR() {
+  // every Nth ISR call (to downsample visually and reduce OLED CPU load)
+static uint8_t scope_sample_counter = 0;
+scope_sample_counter++;
+if (scope_sample_counter == 4) { // tune this for speed vs resolution
+  scope_sample_counter = 0;
+  if (!scope_ready && scope_index < sizeof(scope_buffer)) {
+    scope_buffer[scope_index++] = (output >> 4) + 32; // scale to 0–63 range for OLED
+    if (scope_index == sizeof(scope_buffer)) {
+      scope_ready = true;
+    }
+  }
+}
   PORT->Group[0].OUTSET.reg = 1<<23;
   analogWrite(A0,output - 0x0500);
+  //display.clearDisplay();
+  //display.fillRect(0, 0, display.width(), display.height(), SSD1306_INVERSE);
+  //display.display(); // Update screen with each newly-drawn rectangle
 //  analogWrite(A1,((saw)>>20));
 //  PORT->Group[0].OUTCLR.reg = 1<<23;
 
@@ -400,11 +519,15 @@ average = 4*cap_out;
   }
 
   // play pattern sequence
-  tempo_counter++;
-  if (tempo_counter >= tempo) {
-    tempo_counter = 0;
-    step_counter++;
-    if (step_counter >= 12) {
+  //tempo_counter++;
+  //if (tempo_counter >= tempo) {
+  if(pulse=1) {
+    pulse=0;
+    //tempo_counter = 0;
+    //step_counter++;
+    //if (step_counter >= 12) {
+    if (ppqn >= 6) {
+      ppqn=0;
       step_counter = 0;
       current_step++;
       if (current_step >= sequence_length) current_step = 0;
@@ -427,8 +550,8 @@ average = 4*cap_out;
         accent = accent_pot; // turn on accents
         vcf_env_decay = 0.9972f; // shorten vcf env decay to minimum
       }
-    }
-    else if (step_counter == 7) {
+    //} else if (step_counter == 7) {
+    } else if (ppqn == 4) {
       if ((current_note & 0x80) == 0) vca_env_state = 3; // only turn off notes with no slide
     }
   }
