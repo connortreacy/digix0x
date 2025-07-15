@@ -1,6 +1,25 @@
 #include <Arduino.h>
-#include "MIDIUSB.h"
 #include "SAMD51_InterruptTimer.h"
+#include "MIDIUSB.h"
+
+#define MIDI_NOTE_ON_HEADER 0x09
+#define MIDI_NOTE_OFF_HEADER 0x08
+#define MIDI_NOTE_ON 0x90
+#define MIDI_NOTE_OFF 0x80
+#define MIDI_CLOCK_START 0xFA
+#define MIDI_CLOCK_STOP 0xFC
+#define MIDI_CLOCK_PULSE 0xF8
+
+// midi variables & consts
+const uint8_t midichannel = 0;
+// MIDI follows 24 pulse per quarter note (ppqn), hence 6 pulses per 1/16th step
+const uint8_t pulses_per_step = 6;
+// TB303 notes assumed to be 2/3 of a step length, but this might not be right!
+const uint8_t pulses_per_note = 4;
+uint8_t pulse_counter = 0;
+uint8_t step = 0;
+// used as a semaphore for the step sequenceer
+bool play_sequence = false;
 
 // vco variables
 float input = 0;
@@ -101,14 +120,12 @@ float decay_table[1024] = {
 
 uint8_t sequence[16] = {
   //#include "default.h"
-  //#include "everybody303.h"
-  #include "riser.h"
+  #include "everybody303.h"
+  //#include "riser.h"
 };
 
 // sequencer
-uint32_t BPM = 130;
-
-uint32_t tempo = 600; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
+uint32_t tempo = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
 uint32_t tempo_counter = 0;
 uint8_t step_counter = 0;
 uint8_t current_step = 0;
@@ -123,82 +140,36 @@ float b = 6.07153216E-20;
 float c = 5.573775612E-30;
 
 void setup() {
-//  Serial.begin(1000000);
-//  delay(4000);
-//  Serial.println("begin");
-//  // put your setup code here, to run once:
+  Serial.begin(115200);
   pinMode(13, OUTPUT);
   TC.startTimer(20, myISR); // 20 usec
-
-  // midi
-  Serial.begin(115200);
 }
 
 int i = 0;
 
-void noteOn(byte channel, byte pitch, byte velocity) {
-  midiEventPacket_t noteOn = {0x09, 0x90 | channel, pitch, velocity};
-  MidiUSB.sendMIDI(noteOn);
-}
-
-void noteOff(byte channel, byte pitch, byte velocity) {
-  midiEventPacket_t noteOff = {0x08, 0x80 | channel, pitch, velocity};
-  MidiUSB.sendMIDI(noteOff);
-}
-
-// midi
-//Pulse per quarter note. Each beat has 24 pulses.
-//Tempo is based on software inner BPM.
-int ppqn = 0;
-int pulse = 0;
-int step_reset = 0;
-int step_progress = 0;
-
-uint8_t MIDI_START = 0xFA;
-uint8_t MIDI_CONTINUE = 0xFB;
-uint8_t MIDI_STOP = 0xFC;
-uint8_t MIDI_PULSE =  0xF8;
-
 void loop() {
-  // midi
-  midiEventPacket_t rx;
+  // read midi event packets
+  midiEventPacket_t midiEvent;
   do {
-    rx = MidiUSB.read();
+    midiEvent = MidiUSB.read();
 
-    //Count pulses and send note 
-    if(rx.byte1 == MIDI_PULSE){
-       ++ppqn;
-       pulse = 1;
-       /*
-       if(ppqn == 6){
-          // 1/16th step
-          noteOn(1,48,127);
-          step_progress = 1;
-          MidiUSB.flush(); 
-          ppqn = 0;
-       };
-       */
-    }
-    //Clock start byte
-    else if(rx.byte1 == MIDI_START){
-      //
-      noteOn(1,60,0);
-      step_progress = 1;
-      MidiUSB.flush();
-      ppqn = 0;
-    }
-    //Clock stop byte
-    else if(rx.byte1 == MIDI_STOP){
-      //
-      noteOff(1,48,0);
-      noteOff(1,60,0);
-      step_reset = 1;
-      step_progress = 0;
-      MidiUSB.flush();
-      ppqn = 0;
+    if (midiEvent.byte1 == MIDI_CLOCK_PULSE) {
+      // progress pulse_counter and reset to 0 if one step is complete
+      if (++pulse_counter >= pulses_per_step) {
+        pulse_counter = 0;
+        if (++current_step >= sequence_length) current_step = 0;
+      }
+    } else if (midiEvent.byte1 == MIDI_CLOCK_START) {
+      pulse_counter = 0;
+      play_sequence = true;
+      current_step = 0;
+    } else if (midiEvent.byte1 == MIDI_CLOCK_STOP) {
+      pulse_counter = 0;
+      play_sequence = false;
+      current_step = 0;
     };
-    
-  } while (rx.header != 0);
+
+  } while (midiEvent.header != 0);
 
   // read control interface
   uint16_t temp7 = analogRead(A2); // reso
@@ -437,18 +408,8 @@ average = 4*cap_out;
   }
 
   // play pattern sequence
-  //tempo_counter++;
-  //if (tempo_counter >= tempo) {
-  if(pulse=1) {
-    pulse=0;
-    //tempo_counter = 0;
-    //step_counter++;
-    //if (step_counter >= 12) {
-    if (ppqn >= 6) {
-      ppqn=0;
-      step_counter = 0;
-      current_step++;
-      if (current_step >= sequence_length) current_step = 0;
+  if(play_sequence) {
+    if (play_sequence && pulse_counter < pulses_per_note) {
       uint8_t temp1 = current_note;
       current_note = sequence[current_step];
       if ((current_note & 0x3f) != 0) current_note_value = (current_note & 0x3f)<<6; // if not a rest
@@ -468,8 +429,8 @@ average = 4*cap_out;
         accent = accent_pot; // turn on accents
         vcf_env_decay = 0.9972f; // shorten vcf env decay to minimum
       }
-    //} else if (step_counter == 7) {
-    } else if (ppqn == 3) {
+    }
+    else if (pulse_counter == pulses_per_note) {
       if ((current_note & 0x80) == 0) vca_env_state = 3; // only turn off notes with no slide
     }
   }
