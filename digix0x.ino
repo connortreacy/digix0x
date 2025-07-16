@@ -24,6 +24,7 @@ bool play_sequence = false;
 // vco variables
 float input = 0;
 int32_t saw = 0;
+int32_t square = 0;
 uint16_t saw_last_value = 0;
 
 // filter caps
@@ -96,10 +97,10 @@ float average = 0;
 float last_average = 0;
 byte timer2 = 0;
 int16_t tune = 0;
-float accent_pot = 0;
-float env_mod_pot = 0;
-float cutoff_pot = 0;
-uint16_t decay_pot = 0;
+float accent_amount = 0;
+float env_mod = 0;
+float cutoff = 0;
+uint16_t pot_decay = 0;
 
 // lookup tables
 uint16_t const tanh_table[256] = {
@@ -125,7 +126,11 @@ uint8_t sequence[16] = {
 };
 
 // sequencer
+<<<<<<< HEAD
 uint32_t tempo = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
+=======
+uint32_t pot_accent = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
+>>>>>>> 7d600cc (Pot name changes)
 uint32_t tempo_counter = 0;
 uint8_t step_counter = 0;
 uint8_t current_step = 0;
@@ -172,33 +177,43 @@ void loop() {
   } while (midiEvent.header != 0);
 
   // read control interface
-  uint16_t temp7 = analogRead(A2); // reso
-  resonance = 0.005078125*temp7; // reso 0.005078125 is stock
+  uint16_t pot_reso = analogRead(A2); // reso
+  resonance = 0.005078125*pot_reso; // reso 0.005078125 is stock
 //  i++;
 //  if (i = 1000) {
 //    Serial.println(max_value);
 //    i = 0;
 //  }
-  temp7 = 0x03ff - temp7;  // accent half of reso pot is reversed
+  uint16_t reso_accent_half = 0x03ff - pot_reso;  // accent half of reso pot is reversed
   // accent variables set by resonance
-  k15 = 0.000385*temp7;
-  k14 = 0.000168 - 0.000000045*temp7;
-  k13 = 0.000165 - 0.0000000675*temp7;
+  k15 = 0.000385*reso_accent_half;
+  k14 = 0.000168 - 0.000000045*reso_accent_half;
+  k13 = 0.000165 - 0.0000000675*reso_accent_half;
   k12 = 10.0*k14;
   k11 = 10.0*k13;
-  temp7 = analogRead(A3); // cutoff
-  cutoff_pot = 0.332*temp7 + 328;
-  env_mod_pot = 0.16667 + 0.0008138*analogRead(A5); // env mod
+  
+  uint16_t pot_cutoff = analogRead(A3); // cutoff
+  cutoff = 0.332*pot_cutoff + 328;
+
+  uint16_t pot_env_mod = analogRead(A5); // env mod
+  env_mod = 0.16667 + 0.0008138 * pot_env_mod;
 //  float temp9 = 615*(vcf_env - 0.326)*(0.16667 + 0.0008138*temp8);
 //  float temp9 = 615*(0 - 0.326)*(0.16667 + 0.0008138*temp8);
 //  temp7 += (int16_t)temp9;
 //  if (temp7 > 1023) temp7 = 1023;
 //  if (temp7 < 0) temp7 = 0;
 //  cv = 6*temp7;
-  decay_pot = analogRead(A4); // decay
+  pot_decay = analogRead(A4); // decay
 //  vcf_env_decay = decay_table[temp7];
-  temp7 = analogRead(A1); // accent
-  accent_pot = 0.0009775*temp7;
+  pot_accent = analogRead(A1); // accent
+  accent_amount = 0.0009775*pot_accent;
+
+  
+  Serial.print(saw);
+  Serial.print(' ');
+  Serial.print(square);
+  Serial.print(' ');
+  Serial.println(output - 0x0500);
 }
 
 void myISR() {
@@ -209,6 +224,7 @@ void myISR() {
 
 
   saw -= freq;
+  square = (saw > 1073741823) ? 2147483647 : 0; //2,147,483,647
 //  input is +/-2.5V = 0.333*+/-32k  
 //  int input = sine_table[(saw>>22)]>>4; // was 0.333*, and gave good resonance results
 //  int16_t temp5 = saw >> 18;
@@ -217,6 +233,7 @@ void myISR() {
 //  input -= k9*input;
 
   int temp3 = (int)((saw>>17) - cap_reso2);
+  //int temp3 = (int)((square_wave>>17) - cap_reso2);
 //  if (temp3 > max_value) max_value =  temp3;
   if (temp3 > 0xfe00) temp3 = 0xfe00;
   else if (temp3 < -65000) temp3 = -65000;
@@ -264,7 +281,7 @@ average = 4*cap_out;
   // update filter parameters
   timer2++;
   if (timer2 == 3) {
-    int16_t temp5 = (int16_t)(cutoff_pot + 615*(vcf_env - 0.326f)*env_mod_pot + 1353*accent_vcf);
+    int16_t temp5 = (int16_t)(cutoff + 615*(vcf_env - 0.326f)*env_mod + 1353*accent_vcf);
     if (temp5 < 0) temp5 = 0;
     if (temp5 > 1023) temp5 = 1023;
     temp5 *= 6;
@@ -423,10 +440,10 @@ average = 4*cap_out;
       else slide_timer = 0; // enable slides
       if ((current_note & 0x40) == 0) {  // check if not accents
         accent = 0; // turn off accents
-        vcf_env_decay = decay_table[decay_pot]; // set decay to pot setting
+        vcf_env_decay = decay_table[pot_decay]; // set decay to pot setting
       }
       else {
-        accent = accent_pot; // turn on accents
+        accent = accent_amount; // turn on accents
         vcf_env_decay = 0.9972f; // shorten vcf env decay to minimum
       }
     }
