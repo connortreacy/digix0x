@@ -38,6 +38,7 @@ A digital emulation of the Roland TB-303 synthesizer, running on SAMD51-based mi
 -   Wire VCC, GND, SDA/SCL (I2C) or MOSI/SCK/CS (SPI) as per your DAC and board.
 -   Use the appropriate Arduino library (e.g., [Adafruit_MCP4725](https://github.com/adafruit/Adafruit_MCP4725)).
 -   Replace all `analogWrite(A0, ...)`  calls with your DAC’s output function.
+-   Note: ItsyBitsy M4 doesn't support i2s DACs like PCM5102 [source](https://www.mouser.com/pdfdocs/introducing-adafruit-itsybitsy-m4.pdf?srsltid=AfmBOopDvCFJST56uh57h6QK3D61dIotFfml4tWEUYYRJc_unQqp5E1G)
 
 ## Software Requirements
 
