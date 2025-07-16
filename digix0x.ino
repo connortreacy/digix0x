@@ -163,10 +163,8 @@ int i = 0;
 
 void loop() {
   // read midi event packets
-  midiEventPacket_t midiEvent;
-  do {
-    midiEvent = MidiUSB.read();
-
+  midiEventPacket_t midiEvent = MidiUSB.read();
+  if(midiEvent.header != 0) {
     if (midiEvent.byte1 == MIDI_CLOCK_PULSE) {
       // progress pulse_counter and reset to 0 if one step is complete
       if (++pulse_counter >= pulses_per_step) {
@@ -181,9 +179,22 @@ void loop() {
       pulse_counter = 0;
       play_sequence = false;
       current_step = 0;
-    };
-
-  } while (midiEvent.header != 0);
+      // Stop notes TODO
+    } else if (midiEvent.byte1 == MIDI_NOTE_ON) {
+      // Play note TODO
+    } else if (midiEvent.byte1 == MIDI_NOTE_OFF) {
+      // Stop note TODO
+    } else {
+      Serial.print("Received: ");
+      Serial.print(midiEvent.header, HEX);
+      Serial.print("-");
+      Serial.print(midiEvent.byte1, HEX);
+      Serial.print("-");
+      Serial.print(midiEvent.byte2, HEX);
+      Serial.print("-");
+      Serial.println(midiEvent.byte3, HEX);
+    }
+  }
 
   // read control interface
   pot_accent = analogRead(POT_ACCENT_PORT);
@@ -191,8 +202,11 @@ void loop() {
   pot_cutoff = analogRead(POT_CUTOFF_PORT);
   pot_decay = analogRead(POT_DECAY_PORT);
   pot_env_mod = analogRead(POT_ENV_MOD_PORT);
+  
+  accent_amount = 0.0009775*pot_accent;
 
   resonance = 0.005078125*pot_reso; // reso 0.005078125 is stock
+  
   uint16_t reso_accent_half = 0x03ff - pot_reso;  // accent half of reso pot is reversed
   // accent variables set by resonance
   k15 = 0.000385 * reso_accent_half;
@@ -200,12 +214,10 @@ void loop() {
   k13 = 0.000165 - 0.0000000675*reso_accent_half;
   k12 = 10.0*k14;
   k11 = 10.0*k13;
-  
+
   cutoff = 0.332*pot_cutoff + 328;
 
   env_mod = 0.16667 + 0.0008138 * pot_env_mod;
-  
-  accent_amount = 0.0009775*pot_accent;
 }
 
 void myISR() {
