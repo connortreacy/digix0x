@@ -100,7 +100,20 @@ int16_t tune = 0;
 float accent_amount = 0;
 float env_mod = 0;
 float cutoff = 0;
+
+// control interface
+
+#define POT_ACCENT_PORT A1
+#define POT_RESO_PORT A2
+#define POT_CUTOFF_PORT A3
+#define POT_DECAY_PORT A4
+#define POT_ENV_MOD_PORT A5
+
 uint16_t pot_decay = 0;
+uint16_t pot_reso = 0;
+uint16_t pot_cutoff = 0;
+uint16_t pot_env_mod = 0;
+uint16_t pot_accent = 0;
 
 // lookup tables
 uint16_t const tanh_table[256] = {
@@ -126,11 +139,7 @@ uint8_t sequence[16] = {
 };
 
 // sequencer
-<<<<<<< HEAD
 uint32_t tempo = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
-=======
-uint32_t pot_accent = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
->>>>>>> 7d600cc (Pot name changes)
 uint32_t tempo_counter = 0;
 uint8_t step_counter = 0;
 uint8_t current_step = 0;
@@ -177,43 +186,26 @@ void loop() {
   } while (midiEvent.header != 0);
 
   // read control interface
-  uint16_t pot_reso = analogRead(A2); // reso
+  pot_accent = analogRead(POT_ACCENT_PORT);
+  pot_reso = analogRead(POT_RESO_PORT);
+  pot_cutoff = analogRead(POT_CUTOFF_PORT);
+  pot_decay = analogRead(POT_DECAY_PORT);
+  pot_env_mod = analogRead(POT_ENV_MOD_PORT);
+
   resonance = 0.005078125*pot_reso; // reso 0.005078125 is stock
-//  i++;
-//  if (i = 1000) {
-//    Serial.println(max_value);
-//    i = 0;
-//  }
   uint16_t reso_accent_half = 0x03ff - pot_reso;  // accent half of reso pot is reversed
   // accent variables set by resonance
-  k15 = 0.000385*reso_accent_half;
+  k15 = 0.000385 * reso_accent_half;
   k14 = 0.000168 - 0.000000045*reso_accent_half;
   k13 = 0.000165 - 0.0000000675*reso_accent_half;
   k12 = 10.0*k14;
   k11 = 10.0*k13;
   
-  uint16_t pot_cutoff = analogRead(A3); // cutoff
   cutoff = 0.332*pot_cutoff + 328;
 
-  uint16_t pot_env_mod = analogRead(A5); // env mod
   env_mod = 0.16667 + 0.0008138 * pot_env_mod;
-//  float temp9 = 615*(vcf_env - 0.326)*(0.16667 + 0.0008138*temp8);
-//  float temp9 = 615*(0 - 0.326)*(0.16667 + 0.0008138*temp8);
-//  temp7 += (int16_t)temp9;
-//  if (temp7 > 1023) temp7 = 1023;
-//  if (temp7 < 0) temp7 = 0;
-//  cv = 6*temp7;
-  pot_decay = analogRead(A4); // decay
-//  vcf_env_decay = decay_table[temp7];
-  pot_accent = analogRead(A1); // accent
-  accent_amount = 0.0009775*pot_accent;
-
   
-  Serial.print(saw);
-  Serial.print(' ');
-  Serial.print(square);
-  Serial.print(' ');
-  Serial.println(output - 0x0500);
+  accent_amount = 0.0009775*pot_accent;
 }
 
 void myISR() {
