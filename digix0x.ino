@@ -9,6 +9,7 @@
 #define MIDI_CLOCK_START 0xFA
 #define MIDI_CLOCK_STOP 0xFC
 #define MIDI_CLOCK_PULSE 0xF8
+#define MIDI_PITCH_BEND 0xE0
 
 // midi variables & consts
 const uint8_t midichannel = 0;
@@ -161,39 +162,74 @@ void setup() {
 
 int i = 0;
 
+uint8_t current_midi_note = 0;
+uint8_t last_midi_note = 0;
+
 void loop() {
   // read midi event packets
   midiEventPacket_t midiEvent = MidiUSB.read();
   if(midiEvent.header != 0) {
-    if (midiEvent.byte1 == MIDI_CLOCK_PULSE) {
-      // progress pulse_counter and reset to 0 if one step is complete
-      if (++pulse_counter >= pulses_per_step) {
+    switch (midiEvent.byte1) {
+      case MIDI_CLOCK_PULSE:
+        // progress pulse_counter and reset to 0 if one step is complete
+        if (++pulse_counter >= pulses_per_step) {
+          pulse_counter = 0;
+          if (++current_step >= sequence_length) current_step = 0;
+        }
+        break;
+
+      case MIDI_CLOCK_START:
         pulse_counter = 0;
-        if (++current_step >= sequence_length) current_step = 0;
-      }
-    } else if (midiEvent.byte1 == MIDI_CLOCK_START) {
-      pulse_counter = 0;
-      play_sequence = true;
-      current_step = 0;
-    } else if (midiEvent.byte1 == MIDI_CLOCK_STOP) {
-      pulse_counter = 0;
-      play_sequence = false;
-      current_step = 0;
-      // Stop notes TODO
-    } else if (midiEvent.byte1 == MIDI_NOTE_ON) {
-      // Play note TODO
-    } else if (midiEvent.byte1 == MIDI_NOTE_OFF) {
-      // Stop note TODO
-    } else {
-      Serial.print("Received: ");
-      Serial.print(midiEvent.header, HEX);
-      Serial.print("-");
-      Serial.print(midiEvent.byte1, HEX);
-      Serial.print("-");
-      Serial.print(midiEvent.byte2, HEX);
-      Serial.print("-");
-      Serial.println(midiEvent.byte3, HEX);
-    }
+        play_sequence = true;
+        current_step = 0;
+        break;
+
+      case MIDI_CLOCK_STOP:
+        pulse_counter = 0;
+        play_sequence = false;
+        current_step = 0;
+        // Stop notes TODO
+        break;
+
+      case MIDI_NOTE_ON:
+        // if there was a note playing when new note received, store the last note
+        if (current_midi_note != 0) last_midi_note = current_midi_note;
+
+        // Store the current note
+        // Format should be midi note -23 | accent | slide
+        current_midi_note = midiEvent.byte2 - 23;
+        // Anything over velocity 64 = Accent
+        if (midiEvent.byte3 > 64) current_midi_note |= 1 << 6;
+        // Slide if there was already a note active
+        if (last_midi_note != 0) current_midi_note |= 1 << 7;
+        break;
+
+      case MIDI_NOTE_OFF:
+        if (midiEvent.byte2 - 23 == (current_midi_note & 0x3f)) {
+          current_midi_note = 0;
+        }
+        if (midiEvent.byte2 - 23 == (last_midi_note & 0x3f)) {
+          last_midi_note = 0;
+        }
+        break;
+
+      case MIDI_PITCH_BEND:
+        // This doesn't work very well right now
+        tune = (midiEvent.byte2 >> 1) - 64; // 256->128, then centered on 64; freq table scales up a full semitone per 64 values, so 128 = 2 semitone pitch bend
+        break;
+
+      default:
+        Serial.print("Received: ");
+        Serial.print(midiEvent.header, HEX);
+        Serial.print("-");
+        Serial.print(midiEvent.byte1, HEX);
+        Serial.print("-");
+        Serial.print(midiEvent.byte2, HEX);
+        Serial.print("-");
+        Serial.println(midiEvent.byte3, HEX);
+        break;
+}
+
   }
 
   // read control interface
@@ -421,6 +457,7 @@ average = 4*cap_out;
   // process slides
   if (slide_timer != 0xff) { // dont bother sliding if off
     slide_timer++;
+    // only update the slide position every 10th interrupt cycle - WHY?
     if (slide_timer == 10) {
       slide_timer = 0;
       slide_cap += slide_resistor*(current_note_value - slide_cap);
@@ -454,6 +491,36 @@ average = 4*cap_out;
     else if (pulse_counter == pulses_per_note) {
       if ((current_note & 0x80) == 0) vca_env_state = 3; // only turn off notes with no slide
     }
+  }
+  // play midi note directly
+  if(current_midi_note != 0) {
+    current_note = current_midi_note;
+
+    // if not a rest
+    if ((current_note & 0x3f) != 0) {
+      current_note_value = (current_note & 0x3f)<<6; 
+    }
+    
+    // only attack if prev note had no slide
+    if ((last_midi_note & 0x80) == 0) {
+      vca_env_state = 1;
+      vcf_env_state = 1;
+      slide_timer = 0xff; // turn off slides
+      freq = note_table[current_note_value + tune] << 10;
+      slide_cap = current_note_value; // prep in case next note needs slide
+    } else slide_timer = 0; // enable slides
+    
+    // check if not accents
+    if ((current_note & 0x40) == 0) {
+      accent = 0; // turn off accents
+      vcf_env_decay = decay_table[pot_decay]; // set decay to pot setting
+    } else {
+      accent = accent_amount; // turn on accents
+      vcf_env_decay = 0.9972f; // shorten vcf env decay to minimum
+    }
+  } else {
+    // only turn off notes with no slide
+    if ((current_note & 0x80) == 0) vca_env_state = 3;
   }
 
   PORT->Group[0].OUTCLR.reg = 1<<23;
