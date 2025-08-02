@@ -11,16 +11,21 @@
 #define MIDI_CLOCK_PULSE 0xF8
 #define MIDI_PITCH_BEND 0xE0
 
-// midi variables & consts
-const uint8_t midichannel = 0;
+#define MIDICHANNEL 0
 // MIDI follows 24 pulse per quarter note (ppqn), hence 6 pulses per 1/16th step
-const uint8_t pulses_per_step = 6;
+#define PULSES_PER_STEP 6
 // TB303 notes assumed to be 2/3 of a step length, but this might not be right!
-const uint8_t pulses_per_note = 4;
+#define PULSES_PER_NOTE 4
+
+#define ENV_OFF 0
+#define ENV_ATTACK 1
+#define ENV_DECAY 2
+#define ENV_RELEASE 3
+
+#define ISR_TIMER_PERIOD 20 // 20 uSec = 50khz sample rate
+
 uint8_t pulse_counter = 0;
-uint8_t step = 0;
-// used as a semaphore for the step sequenceer
-bool play_sequence = false;
+bool play_sequence = false; // used as a semaphore for the step sequencer
 
 // vco variables
 float input = 0;
@@ -62,7 +67,7 @@ float vca_env = 0.0; // main envelope output
 float vca_env_decay = 0.99991; // stock is 0.99991
 uint8_t vca_env_timer1 = 0; // timers to set sample rates
 uint8_t vca_env_timer2 = 0;
-uint8_t vca_env_state = 0; // 0 = off, 1 = attack, 2 = decay, 3 = release (volatile?)
+uint8_t vca_env_state = ENV_OFF; // 0 = off, 1 = attack, 2 = decay, 3 = release (volatile?)
 float last_vca_env = 0.0; // storage of last vca_env before release phase
 float vca_delay_cap = 0.0; // timing for delay gate->vca
 
@@ -70,14 +75,14 @@ float vca_delay_cap = 0.0; // timing for delay gate->vca
 float vcf_env = 0.0; // main envelope out
 float vcf_env_decay = 0.9972; // 0.9972 is shortest, 0.99978 is longest
 uint16_t vcf_env_timer1 = 0; // timer to set sample rate
-uint8_t vcf_env_state = 0; // 0 = off, 1 = attack, 2 = decay (volatile?)
+uint8_t vcf_env_state = ENV_OFF; // 0 = off, 1 = attack, 2 = decay (volatile?), 3 = release
 
 // accent variables (used in vcf section)
-float accent = 0; // accent knob setting: 0 -> 1
-float accent_cap1 = 0; // cap for vcf accent
-float accent_cap2 = 0; // cap for vca accent
-float accent_vca = 0; // signal to vca
-float accent_vcf = 0; // signal to vcf
+float accent = 0.0; // accent knob setting: 0 -> 1
+float accent_cap1 = 0.0; // cap for vcf accent
+float accent_cap2 = 0.0; // cap for vca accent
+float accent_vca = 0.0; // signal to vca
+float accent_vcf = 0.0; // signal to vcf
 float k11 = 0.0018; // R from env to accent cap: 0.002 R10, 0.00095 R0, 0.0013 R5, 0.0018 R8, 0.0011 R2
 float k12 = 0.00143; // R from accent cap to ground: 0.0018 R10, 0.0011 R0, 0.0014 R5, 0.00165 R8, 0.0012 R2
 float k13 = k11/10.0; // R from env to accent cap during attack: 0.0002 for R10, 
@@ -85,22 +90,23 @@ float k14 = k12/10.0; // R from accent cap to ground durring attack: 0.00018 for
 float k15 = 0.0; // mix: 0 R10, 0.39 R0, 0.21 R5, 0 R8, 0.36 R2
 
 // slide variables
-float slide_cap = 0;
-float slide_resistor = 0.00909; // Ts/22ms for stock - Ts = 10*20us
+float slide_cap = 0.0;
+//float slide_resistor = 0.00909; // Ts/22ms for stock - Ts = 10*20us
+float slide_resistor = 0.00303; // Ts/22ms for stock - Ts = 10*20us
 uint8_t slide_timer = 0xff;  // 0xff = off, other values for clocking while on
 
 // controls
-uint16_t reso = 10;
-uint32_t timer = 0;
-uint16_t cv = 120;
-float resonance = 0;
-float average = 0;
-float last_average = 0;
+uint16_t UNUSED_reso = 10;
+uint32_t UNUSED_timer = 0;
+uint16_t UNUSED_cv = 120;
+float resonance = 0.0;
+float average = 0.0;
+float last_average = 0.0;
 byte timer2 = 0;
 int16_t tune = 0;
-float accent_amount = 0;
-float env_mod = 0;
-float cutoff = 0;
+float accent_amount = 0.0;
+float env_mod = 0.0;
+float cutoff = 0.0;
 
 // control interface
 
@@ -157,13 +163,15 @@ float c = 5.573775612E-30;
 void setup() {
   Serial.begin(115200);
   pinMode(13, OUTPUT);
-  TC.startTimer(20, myISR); // 20 usec
+  TC.startTimer(ISR_TIMER_PERIOD, myISR);
 }
 
 int i = 0;
 
+bool midi_gate = false;
 uint8_t current_midi_note = 0;
-uint8_t last_midi_note = 0;
+uint8_t current_midi_velocity = 0;
+uint8_t previous_midi_note = 0;
 
 void loop() {
   // read midi event packets
@@ -172,7 +180,7 @@ void loop() {
     switch (midiEvent.byte1) {
       case MIDI_CLOCK_PULSE:
         // progress pulse_counter and reset to 0 if one step is complete
-        if (++pulse_counter >= pulses_per_step) {
+        if (++pulse_counter >= PULSES_PER_STEP) {
           pulse_counter = 0;
           if (++current_step >= sequence_length) current_step = 0;
         }
@@ -193,32 +201,38 @@ void loop() {
 
       case MIDI_NOTE_ON:
         // if there was a note playing when new note received, store the last note
-        if (current_midi_note != 0) last_midi_note = current_midi_note;
+        if (current_midi_note != 0) previous_midi_note = current_midi_note;
+        midi_gate = true;
 
         // Store the current note
         // Format should be midi note -23 | accent | slide
-        current_midi_note = midiEvent.byte2 - 23;
+        current_midi_note = midiEvent.byte2;
+        current_midi_velocity = midiEvent.byte3;
         // Anything over velocity 64 = Accent
-        if (midiEvent.byte3 > 64) current_midi_note |= 1 << 6;
+        //if (midiEvent.byte3 > 64) current_midi_note |= 1 << 6;
         // Slide if there was already a note active
-        if (last_midi_note != 0) current_midi_note |= 1 << 7;
+        //if (last_midi_note != 0) current_midi_note |= 1 << 7;
         break;
 
       case MIDI_NOTE_OFF:
-        if (midiEvent.byte2 - 23 == (current_midi_note & 0x3f)) {
-          current_midi_note = 0;
+        // We're only storing 2 midi notes; current and previous
+        if (midiEvent.byte2 == (current_midi_note)) {
+          current_midi_note = previous_midi_note;
+          previous_midi_note = 0;
         }
-        if (midiEvent.byte2 - 23 == (last_midi_note & 0x3f)) {
-          last_midi_note = 0;
+        if (midiEvent.byte2 == (previous_midi_note)) {
+          previous_midi_note = 0;
         }
+        if(current_midi_note == 0) midi_gate = false;
         break;
 
       case MIDI_PITCH_BEND:
         // This doesn't work very well right now
-        tune = (midiEvent.byte2 >> 1) - 64; // 256->128, then centered on 64; freq table scales up a full semitone per 64 values, so 128 = 2 semitone pitch bend
+        //tune = (midiEvent.byte2 >> 1) - 64; // 256->128, then centered on 64; freq table scales up a full semitone per 64 values, so 128 = 2 semitone pitch bend
         break;
 
       default:
+        /* Noisy, disable
         Serial.print("Received: ");
         Serial.print(midiEvent.header, HEX);
         Serial.print("-");
@@ -227,9 +241,9 @@ void loop() {
         Serial.print(midiEvent.byte2, HEX);
         Serial.print("-");
         Serial.println(midiEvent.byte3, HEX);
+        */
         break;
-}
-
+    }
   }
 
   // read control interface
@@ -254,14 +268,28 @@ void loop() {
   cutoff = 0.332*pot_cutoff + 328;
 
   env_mod = 0.16667 + 0.0008138 * pot_env_mod;
+  
+  Serial.print("play_sequence:");       Serial.print(play_sequence);      Serial.print(",");
+  Serial.print("current_midi_note:");   Serial.print(current_midi_note);  Serial.print(",");
+  Serial.print("previous_midi_note:");  Serial.print(previous_midi_note); Serial.print(",");
+  Serial.print("slide_timer:");         Serial.print(slide_timer);        Serial.print(",");
+  Serial.print("slide_cap:");           Serial.print(slide_cap);          Serial.print(",");
+  Serial.print("vcf_env:");             Serial.print(vcf_env);            Serial.print(",");
+  Serial.print("vca_env:");             Serial.print(vca_env);            Serial.print(",");
+  //Serial.print("pot_accent:");          Serial.print(pot_accent);         Serial.print(",");
+  //Serial.print("pot_reso:");            Serial.print(pot_reso);           Serial.print(",");
+  //Serial.print("pot_cutoff:");          Serial.print(pot_cutoff);         Serial.print(",");
+  //Serial.print("pot_decay:");           Serial.print(pot_decay);          Serial.print(",");
+  //Serial.print("pot_env_mod:");         Serial.print(pot_env_mod);        Serial.print(",");
+  Serial.println();
 }
 
-void myISR() {
-  PORT->Group[0].OUTSET.reg = 1<<23;
-  analogWrite(A0,output - 0x0500);
-//  analogWrite(A1,((saw)>>20));
-//  PORT->Group[0].OUTCLR.reg = 1<<23;
+uint8_t ISR_skips = 0;
 
+void myISR() {
+  // Disabling this, think it's just debugging
+  //PORT->Group[0].OUTSET.reg = 1<<23;
+  analogWrite(A0,output - 0x0500);
 
   saw -= freq;
   square = (saw > 1073741823) ? 2147483647 : 0; //2,147,483,647
@@ -304,13 +332,13 @@ for (int i = 0; i < 4; i++) {
   float temp2 = resonance*temp1 - k6*(cap_reso - cap_reso2); // int is the reso amt
   cap_reso += temp2;
   cap_reso2 += temp2 - k10*cap_reso2;
-//  average += cap_out;
+//  UNUSED_average += cap_out;
 }
 average = 4*cap_out;
 //  PORT->Group[0].OUTCLR.reg = 1<<23;
   float temp1 = (average - last_average);
   last_average = average;
-  average = 0;
+  average = 0.0;
   cap_vca1 += temp1 - k7*cap_vca1;
   cap_vca2 += temp1 - k8*cap_vca2;
 //  output = (int16_t)((last_average/4) + 0x8000) >> 4;
@@ -340,121 +368,148 @@ average = 4*cap_out;
   }
 
   // vcf envelope generation
-  if (vcf_env_state == 0) vcf_env = 0; // off phase, do nothing
-  else if (vcf_env_state == 1) { // attack phase
-    vcf_env += 0.15f*(1- vcf_env); // attack time constant of 0.15
-    if (vcf_env > .99998f) { // check if at max
-      vcf_env = 0.99998f;
-      vcf_env_state = 2;
-      vcf_env_timer1 = 0;
+  switch(vcf_env_state) {
+    // off phase, do nothing
+    case ENV_OFF: {
+      vcf_env = 0.0; 
+      break;
     }
-    // accent: reso->vcf
-    float temp2 = accent*vcf_env - 0.362f - accent_cap1; // signal into cap
-    if (temp2 > 0) {
-      accent_cap1 += k13*temp2;
-      accent_cap1 -= k14*accent_cap1;
-      accent_vcf = k15*temp2 + accent_cap1;
-    }
-    else {
-      accent_cap1 -= k14*accent_cap1;
-      accent_vcf = accent_cap1;
-    }
-    // accent: vcf->vca
-    accent_cap2 += 0.0404f*(accent*vcf_env - accent_cap2); // slight low pass
-    if (accent_cap2 > 0.09f) accent_vca = accent_cap2 - 0.09f; // diode threshold
-    else accent_vca = 0;
-  }
-  else if (vcf_env_state == 2) { // decay phase
-    vcf_env_timer1++;
-    if (vcf_env_timer1 == 10) { // 1/10 sample rate
-      vcf_env_timer1 = 0;
-      vcf_env *= vcf_env_decay; // decay
-      if (vcf_env < 0.000015f) { // check if at minimum
-        vcf_env = 0;
-        vcf_env_state = 3; // release phase for attacks
+
+    // attack phase
+    case ENV_ATTACK: {
+      vcf_env += 0.15f*(1- vcf_env); // attack time constant of 0.15
+      if (vcf_env > .99998f) { // check if at max
+        vcf_env = 0.99998f;
+        vcf_env_state = ENV_DECAY;
+        vcf_env_timer1 = 0;
       }
       // accent: reso->vcf
       float temp2 = accent*vcf_env - 0.362f - accent_cap1; // signal into cap
       if (temp2 > 0) {
-        accent_cap1 += k11*temp2;
-        accent_cap1 -= k12*accent_cap1;
+        accent_cap1 += k13*temp2;
+        accent_cap1 -= k14*accent_cap1;
         accent_vcf = k15*temp2 + accent_cap1;
       }
       else {
-        accent_cap1 -= k12*accent_cap1;
+        accent_cap1 -= k14*accent_cap1;
         accent_vcf = accent_cap1;
       }
       // accent: vcf->vca
-// not sure what to do here for the moment
-// there is a slow decay to 0.9 that is a very slight difference from whats below
-// not sure if its worth the extra effort to figure it out      
-//      if (accent_cap2 > 0.2) accent_cap2 += 0.404*(vcf_env - accent_cap2);
-//      else accent_cap2 += 0.004*(0.08 - accent_cap2);
-      accent_cap2 += 0.404f*(accent*vcf_env - accent_cap2); // slight low pass
+      accent_cap2 += 0.0404f*(accent*vcf_env - accent_cap2); // slight low pass
       if (accent_cap2 > 0.09f) accent_vca = accent_cap2 - 0.09f; // diode threshold
       else accent_vca = 0;
+      break;
     }
-  }
-  else if (vcf_env_state == 3) { // release phase for attack, if needed
-    vcf_env_timer1++;
-    if (vcf_env_timer1 == 10) {
-      vcf_env_timer1 = 0;
-      // accent: reso->vcf
-      accent_cap1 -= k12*accent_cap1;
-      accent_vcf = accent_cap1;
-      if (accent_vcf < 0.000015f) {
-        accent_vcf = 0;
-        vcf_env_state = 0;
+
+    // decay phase
+    case ENV_DECAY: {
+      vcf_env_timer1++;
+      if (vcf_env_timer1 == 10) { // 1/10 sample rate
+        vcf_env_timer1 = 0;
+        vcf_env *= vcf_env_decay; // decay
+        if (vcf_env < 0.000015f) { // check if at minimum
+          vcf_env = 0.0;
+          vcf_env_state = ENV_RELEASE; // release phase for attacks
+        }
+        // accent: reso->vcf
+        float temp2 = accent*vcf_env - 0.362f - accent_cap1; // signal into cap
+        if (temp2 > 0) {
+          accent_cap1 += k11*temp2;
+          accent_cap1 -= k12*accent_cap1;
+          accent_vcf = k15*temp2 + accent_cap1;
+        }
+        else {
+          accent_cap1 -= k12*accent_cap1;
+          accent_vcf = accent_cap1;
+        }
+        // accent: vcf->vca
+        // not sure what to do here for the moment
+        // there is a slow decay to 0.9 that is a very slight difference from whats below
+        // not sure if its worth the extra effort to figure it out      
+        //      if (accent_cap2 > 0.2) accent_cap2 += 0.404*(vcf_env - accent_cap2);
+        //      else accent_cap2 += 0.004*(0.08 - accent_cap2);
+        accent_cap2 += 0.404f*(accent*vcf_env - accent_cap2); // slight low pass
+        if (accent_cap2 > 0.09f) accent_vca = accent_cap2 - 0.09f; // diode threshold
+        else accent_vca = 0.0;
       }
+      break;
+    }
+
+    case ENV_RELEASE: {
+      vcf_env_timer1++;
+      if (vcf_env_timer1 == 10) {
+        vcf_env_timer1 = 0;
+        // accent: reso->vcf
+        accent_cap1 -= k12*accent_cap1;
+        accent_vcf = accent_cap1;
+        if (accent_vcf < 0.000015f) {
+          accent_vcf = 0.0;
+          vcf_env_state = ENV_OFF;
+        }
+      }
+      break;
     }
   }
 
   // vca envelope generation
-  if (vca_env_state == 0) { // off phase
-    vca_env = 0; // set env to zero
-    vca_delay_cap *= 0.9998f; // keep decaying delay cap
-  }
-  else if (vca_env_state == 1) { // attack phase
-    vca_delay_cap += 0.002f; // charage decay cap
-    if (vca_delay_cap > 0.4828f) { // if its hit vbe threshold, turn on attack
-      vca_delay_cap = 0.565f; // reset to max vbe
-      vca_env *= 1.076f; // do attack phase
-      vca_env += 0.0076f;
-      if (vca_env > .99998f) { // check if done attacking
-        vca_env = 0.99998f; // prep for decay
-        vca_env_state = 2;
+  switch(vca_env_state) {
+    // off phase
+    case ENV_OFF: {
+      vca_env = 0.0; // set env to zero
+      vca_delay_cap *= 0.9998f; // keep decaying delay cap
+      break;
+    }
+
+    // attack phase
+    case ENV_ATTACK: {
+      vca_delay_cap += 0.002f; // charage decay cap
+      if (vca_delay_cap > 0.4828f) { // if its hit vbe threshold, turn on attack
+        vca_delay_cap = 0.565f; // reset to max vbe
+        vca_env *= 1.076f; // do attack phase
+        vca_env += 0.0076f;
+        if (vca_env > .99998f) { // check if done attacking
+          vca_env = 0.99998f; // prep for decay
+          vca_env_state = ENV_DECAY;
+          vca_env_timer1 = 0;
+          vca_env_timer2 = 0;
+          vca_env_decay = 0.99991f;
+        }
+      }
+      break;
+    }
+
+    // decay phase
+    case ENV_DECAY: {
+      vca_env_timer1++;
+      if (vca_env_timer1 == 10) { // 1/10 sample rate for decay
         vca_env_timer1 = 0;
-        vca_env_timer2 = 0;
-        vca_env_decay = 0.99991f;
+        vca_env_timer2++;
+        vca_env *= vca_env_decay;
+        if (vca_env_timer2 == 100) { // very small addition needed here
+          vca_env_timer2 = 0; // so 1/1000 sample rate needed
+          vca_env_decay -= 0.000001f; // limited by float32 resolution
+        }
+        if (vca_env < 0.000015f) {  // envelope off
+          vca_env = 0.0;
+          vca_env_state = ENV_OFF;
+        }
       }
+      break;
     }
-  }
-  else if (vca_env_state == 2) { // decay phase
-    vca_env_timer1++;
-    if (vca_env_timer1 == 10) { // 1/10 sample rate for decay
-      vca_env_timer1 = 0;
-      vca_env_timer2++;
-      vca_env *= vca_env_decay;
-      if (vca_env_timer2 == 100) { // very small addition needed here
-        vca_env_timer2 = 0; // so 1/1000 sample rate needed
-        vca_env_decay -= 0.000001f; // limited by float32 resolution
+
+    // release phase
+    case ENV_RELEASE: {
+      vca_delay_cap *= 0.9998f; // decay delay cap
+      vca_env += 0.004f*(last_vca_env - vca_env); // release is ~ a truncated expo decay
+      if (vca_env <= 0.000015f) { // envelope off
+        vca_env = 0.0;
+        vca_env_state = ENV_OFF;
       }
-      if (vca_env < 0.000015f) {  // envelope off
-        vca_env = 0;
-        vca_env_state = 0;
-      }
-    }
-  }
-  else if (vca_env_state == 3) { // release phase
-    vca_delay_cap *= 0.9998f; // decay delay cap
-    vca_env += 0.004f*(last_vca_env - vca_env); // release is ~ a truncated expo decay
-    if (vca_env <= 0.000015f) { // envelope off
-      vca_env = 0;
-      vca_env_state = 0;
     }
   }
 
   // process slides
+  /*
   if (slide_timer != 0xff) { // dont bother sliding if off
     slide_timer++;
     // only update the slide position every 10th interrupt cycle - WHY?
@@ -464,16 +519,18 @@ average = 4*cap_out;
       freq = note_table[(uint16_t)slide_cap + tune] << 10;
     }
   }
+  */
 
   // play pattern sequence
+  /*
   if(play_sequence) {
     if (play_sequence && pulse_counter < pulses_per_note) {
       uint8_t temp1 = current_note;
       current_note = sequence[current_step];
       if ((current_note & 0x3f) != 0) current_note_value = (current_note & 0x3f)<<6; // if not a rest
       if ((temp1 & 0x80) == 0) { // only attack if prev note had no slide
-        vca_env_state = 1;
-        vcf_env_state = 1;
+        vca_env_state = ENV_ATTACK;
+        vcf_env_state = ENV_ATTACK;
         slide_timer = 0xff; // turn off slides
         freq = note_table[current_note_value + tune] << 10;
         slide_cap = current_note_value; // prep in case next note needs slide
@@ -489,39 +546,47 @@ average = 4*cap_out;
       }
     }
     else if (pulse_counter == pulses_per_note) {
-      if ((current_note & 0x80) == 0) vca_env_state = 3; // only turn off notes with no slide
+      if ((current_note & 0x80) == 0) vca_env_state = ENV_RELEASE; // only turn off notes with no slide
     }
   }
+  */
   // play midi note directly
+  if(midi_gate) {
+    
+  }
   if(current_midi_note != 0) {
-    current_note = current_midi_note;
+    current_note = current_midi_note -23;
 
+    /* No rests with MIDI notes!
     // if not a rest
     if ((current_note & 0x3f) != 0) {
       current_note_value = (current_note & 0x3f)<<6; 
     }
+    */
+    current_note_value = (current_note & 0x3f)<<6; 
     
     // only attack if prev note had no slide
-    if ((last_midi_note & 0x80) == 0) {
-      vca_env_state = 1;
-      vcf_env_state = 1;
+    /*
+    if (previous_midi_note == 0) {
+      vca_env_state = ENV_ATTACK;
+      vcf_env_state = ENV_ATTACK;
       slide_timer = 0xff; // turn off slides
       freq = note_table[current_note_value + tune] << 10;
       slide_cap = current_note_value; // prep in case next note needs slide
     } else slide_timer = 0; // enable slides
+    */
     
-    // check if not accents
-    if ((current_note & 0x40) == 0) {
-      accent = 0; // turn off accents
+    // proportional accent based on velocity
+    accent = accent_amount * current_midi_velocity / 128;
+    if(current_midi_velocity < 64) {
       vcf_env_decay = decay_table[pot_decay]; // set decay to pot setting
     } else {
-      accent = accent_amount; // turn on accents
       vcf_env_decay = 0.9972f; // shorten vcf env decay to minimum
     }
   } else {
     // only turn off notes with no slide
-    if ((current_note & 0x80) == 0) vca_env_state = 3;
+    if ((current_note & 0x80) == 0) vca_env_state = ENV_RELEASE;
   }
-
-  PORT->Group[0].OUTCLR.reg = 1<<23;
+  // Disabling this, think it's just debugging
+  //PORT->Group[0].OUTCLR.reg = 1<<23;
 }
