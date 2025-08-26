@@ -3,8 +3,12 @@
 
 // vco variables
 float input = 0;
-int32_t saw = 0;
+uint32_t saw = 0;
 uint16_t saw_last_value = 0;
+uint16_t threshold = 0;
+uint16_t freq_offset = 0;
+uint16_t freq_inv = 0;
+uint16_t sq_note = 1;
 
 // filter caps
 float cap1 = 0; // lpf c1
@@ -80,16 +84,21 @@ float accent_pot = 0;
 float env_mod_pot = 0;
 float cutoff_pot = 0;
 uint16_t decay_pot = 0;
+uint8_t waveform = 0; // sq(1) or saw(0)
+uint16_t overdrive = 0; // filter overdrive
 
 // lookup tables
 uint16_t const tanh_table[256] = {
   #include "303filt_tanh.h"
 };
-int16_t const sine_table[1024] = {
-  #include "sinetable.h"
+//int16_t const sine_table[1024] = {
+//  #include "sinetable.h"
+//};
+uint16_t const note_table[4096] = {
+  #include "midi_note_table_48k_invert3.h"
 };
-uint32_t const note_table[50*64] = {
-  #include "midi_note_table_50x64.h"
+int16_t const saw_edge[2048] = {
+  #include "saw_edge2.h"
 };
 float const cv_table[6*1024] = {
   #include "303filt_coeff_5us.h"
@@ -97,12 +106,48 @@ float const cv_table[6*1024] = {
 float decay_table[1024] = {
   #include "303_vcf_decay_table.h"
 };
+int16_t const sq_wavs[64][1024] = {
+  #include "sqwavs.h"
+};
+
 
 uint8_t sequence[16] = {
-  //#include "default.h"
-  #include "everybody303.h"
-  //#include "riser.h"
+  23 | 1<<6 | 0 << 7, // midi note -12 | accent | slide
+  23 | 0<<6 | 0 << 7,
+  23 | 1<<6 | 0 << 7,
+  23 | 1<<6 | 0 << 7,
+  23 | 1<<6 | 1 << 7,
+  23 | 0<<6 | 0 << 7,
+  21 | 1<<6 | 1 << 7,
+  21 | 0<<6 | 0 << 7,
+  21 | 1<<6 | 1 << 7,
+  21 | 0<<6 | 0 << 7,
+  21 | 0<<6 | 0 << 7,
+  21 | 0<<6 | 0 << 7,
+  30 | 1<<6 | 1 << 7,
+  30 | 0<<6 | 0 << 7,
+  21 | 0<<6 | 0 << 7,
+  21 | 0<<6 | 0 << 7
 };
+
+//uint8_t sequence[16] = {
+//  11 | 1<<6 | 1 << 7, // midi note -23 | accent | slide
+//  11 | 0<<6 | 1 << 7,
+//  11 | 1<<6 | 1 << 7,
+//  11 | 1<<6 | 1 << 7,
+//  11 | 1<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7,
+//  11 | 1<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7,
+//  11 | 1<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7,
+//  11 | 1<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7,
+//  11 | 0<<6 | 1 << 7
+//};
 
 // sequencer
 uint32_t tempo = 500; // step clock, T_step/(12*T_interrupt), T_step = 60s/BPM
@@ -115,6 +160,7 @@ int16_t current_note_value = 0;
 uint32_t freq = 100;
 int max_value = 0;
 
+
 float a = 2.7939677E-10;
 float b = 6.07153216E-20;
 float c = 5.573775612E-30;
@@ -125,7 +171,8 @@ void setup() {
 //  Serial.println("begin");
 //  // put your setup code here, to run once:
   pinMode(13, OUTPUT);
-  TC.startTimer(20, myISR); // 20 usec
+  pinMode(12, INPUT_PULLUP);
+  TC.startTimer(21, myISR); // 20 usec
 }
 
 int i = 0;
@@ -157,18 +204,35 @@ void loop() {
 //  cv = 6*temp7;
   decay_pot = analogRead(A4); // decay
 //  vcf_env_decay = decay_table[temp7];
-  temp7 = analogRead(A1); // accent
-  accent_pot = 0.0009775*temp7;
+//  temp7 = analogRead(A1); // accent
+//  accent_pot = 0.0009775*temp7;
+  waveform = digitalRead(12); // check for saw or sq
 }
 
 void myISR() {
   PORT->Group[0].OUTSET.reg = 1<<23;
   analogWrite(A0,output - 0x0500);
-//  analogWrite(A1,((saw)>>20));
+  
 //  PORT->Group[0].OUTCLR.reg = 1<<23;
 
-
-  saw -= freq;
+  saw += freq;
+  int32_t wave;
+  if (waveform == 1) { // make square
+    uint16_t temp3 = saw >> 22; // set phase to 1024 steps
+    uint16_t temp4 = saw >> 6; // get fractional step
+    wave = ((sq_wavs[sq_note][temp3]*(0x10000-temp4) + sq_wavs[sq_note][((temp3+1)&0x03ff)]*(temp4))>>16);
+  }
+  else { // make saw
+    wave = (saw >> 16);
+    uint16_t phase = wave;
+    phase += freq_offset;
+    if (phase < threshold) {
+      int16_t temp1 = wave;
+      wave -= saw_edge[(((temp1*freq_inv) >> 13) + 1024)];
+    }
+    wave = 0x7fff - wave;
+  }
+  analogWrite(A1,(wave >> 5) + 0x0800);
 //  input is +/-2.5V = 0.333*+/-32k  
 //  int input = sine_table[(saw>>22)]>>4; // was 0.333*, and gave good resonance results
 //  int16_t temp5 = saw >> 18;
@@ -176,7 +240,7 @@ void myISR() {
 //  saw_last_value = temp4;
 //  input -= k9*input;
 
-  int temp3 = (int)((saw>>17) - cap_reso2);
+  int temp3 = (int)((wave>>1) - cap_reso2);
 //  if (temp3 > max_value) max_value =  temp3;
   if (temp3 > 0xfe00) temp3 = 0xfe00;
   else if (temp3 < -65000) temp3 = -65000;
@@ -363,7 +427,13 @@ average = 4*cap_out;
     if (slide_timer == 10) {
       slide_timer = 0;
       slide_cap += slide_resistor*(current_note_value - slide_cap);
-      freq = note_table[(uint16_t)slide_cap + tune] << 10;
+      uint16_t temp_note = ((uint16_t)slide_cap + tune);
+      sq_note = (temp_note >> 6) & 0x003f;
+      uint16_t interim = note_table[temp_note];
+      freq = interim << 10;
+      freq_offset = interim >> 3;
+      threshold = interim >> 2;
+      freq_inv = note_table[(temp_note + 1)];
     }
   }
 
@@ -383,7 +453,13 @@ average = 4*cap_out;
         vca_env_state = 1;
         vcf_env_state = 1;
         slide_timer = 0xff; // turn off slides
-        freq = note_table[current_note_value + tune] << 10;
+        uint16_t temp_note = (current_note_value + tune);
+        sq_note = (temp_note >> 6) & 0x003f;
+        uint16_t interim = note_table[temp_note];
+        freq = interim << 10;
+        freq_offset = interim >> 3;
+        threshold = interim >> 2;
+        freq_inv = note_table[(temp_note + 1)];
         slide_cap = current_note_value; // prep in case next note needs slide
       }
       else slide_timer = 0; // enable slides
