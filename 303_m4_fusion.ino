@@ -1,5 +1,9 @@
 #include <Arduino.h>
+#include <Adafruit_ZeroI2S.h>
 #include "SAMD51_InterruptTimer.h"
+
+#define VOLUME ( (1UL << 31) - 1)
+Adafruit_ZeroI2S i2s = Adafruit_ZeroI2S();
 
 // vco variables
 float input = 0;
@@ -15,6 +19,7 @@ float cap_out = 0; // hpf c into diffamp
 float cap_reso = 0; // hpf c into reso
 float cap_vca1 = 0; // hpf c into vca from diffamp
 float cap_vca2 = 0; // hpf c into vca from reso
+float output_f = 0;
 int16_t output = 0;
 float cap_reso2 = 0; // second hpf into reso
 
@@ -158,19 +163,16 @@ void setup() {
 //  // put your setup code here, to run once:
   pinMode(13, OUTPUT);
   TC.startTimer(20, myISR); // 20 usec
+  i2s.begin(I2S_32_BIT, 50000);
+  i2s.enableTx();
 }
 
 int i = 0;
 
-void loop() {
+void readInputs() {
   // read control interface
   uint16_t temp7 = analogRead(A2); // reso
   resonance = 0.005078125*temp7; // reso 0.005078125 is stock
-//  i++;
-//  if (i = 1000) {
-//    Serial.println(max_value);
-//    i = 0;
-//  }
   temp7 = 0x03ff - temp7;  // accent half of reso pot is reversed
   // accent variables set by resonance
   k15 = 0.000385*temp7;
@@ -181,12 +183,26 @@ void loop() {
   temp7 = analogRead(A3); // cutoff
   cutoff_pot = 0.332*temp7 + 328;
   env_mod_pot = 0.16667 + 0.0008138*analogRead(A5); // env mod
-//  float temp9 = 615*(vcf_env - 0.326)*(0.16667 + 0.0008138*temp8);
-//  float temp9 = 615*(0 - 0.326)*(0.16667 + 0.0008138*temp8);
-//  temp7 += (int16_t)temp9;
-//  if (temp7 > 1023) temp7 = 1023;
-//  if (temp7 < 0) temp7 = 0;
-//  cv = 6*temp7;
+  decay_pot = analogRead(A4); // decay
+//  vcf_env_decay = decay_table[temp7];
+  temp7 = analogRead(A1); // accent
+  accent_pot = 0.0009775*temp7;
+}
+
+void loop() {
+    // read control interface
+  uint16_t temp7 = analogRead(A2); // reso
+  resonance = 0.005078125*temp7; // reso 0.005078125 is stock
+  temp7 = 0x03ff - temp7;  // accent half of reso pot is reversed
+  // accent variables set by resonance
+  k15 = 0.000385*temp7;
+  k14 = 0.000168 - 0.000000045*temp7;
+  k13 = 0.000165 - 0.0000000675*temp7;
+  k12 = 10.0*k14;
+  k11 = 10.0*k13;
+  temp7 = analogRead(A3); // cutoff
+  cutoff_pot = 0.332*temp7 + 328;
+  env_mod_pot = 0.16667 + 0.0008138*analogRead(A5); // env mod
   decay_pot = analogRead(A4); // decay
 //  vcf_env_decay = decay_table[temp7];
   temp7 = analogRead(A1); // accent
@@ -195,7 +211,12 @@ void loop() {
 
 void myISR() {
   PORT->Group[0].OUTSET.reg = 1<<23;
-  analogWrite(A0,output - 0x0500);
+  //analogWrite(A0,output - 0x0500);
+  analogWrite(A0,output - 0x1000);
+  i2s.write(
+    (int32_t)output_f<<15, 
+    (int32_t)output_f<<15
+  );
 //  analogWrite(A1,((saw)>>20));
 //  PORT->Group[0].OUTCLR.reg = 1<<23;
 
@@ -251,7 +272,8 @@ average = 4*cap_out;
 //  output = (int16_t)((last_average/4) + 0x8000) >> 4;
 //  output = (int16_t)((vca_env*(cap_vca1 + 0.42*resonance*cap_vca2)/4)+0x8000)>>4;// 0, 0.51, 1.65, 2.2
 //  output = (int16_t)(vcf_env*65536)>>4;
-  output = (int16_t)(((vca_env + 2.855f*accent_vca)*(cap_vca1 + 0.42f*resonance*cap_vca2)*0.04f)+0x8000)>>4;
+  output_f = (((vca_env + 2.855f*accent_vca)*(cap_vca1 + 0.42f*resonance*cap_vca2)*0.04f)+0x8000);
+  output = (int16_t) output_f>>4;
 
   // update filter parameters
   timer2++;
