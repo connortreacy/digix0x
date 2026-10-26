@@ -30,6 +30,16 @@ static const uint8_t default_sequence[16] = {
 #include "everybody303.h"
 };
 
+// MIDI note -> packed 303 note offset. Was 23 in the original code;
+// validation against hardware VCO captures (303wavs/, host/validate_vco.py)
+// showed that plays ~1000 cents flat, while 13 lands within trim below.
+#define MIDI_NOTE_OFFSET 13
+// Residual tuning trim in note-table steps (64/semitone): hardware
+// captures measure the table ~29 cents flat at 50 kHz, i.e. +19 steps.
+// Must stay EVEN: the table stores (increment, inverse) pairs, so odd
+// indices are inverse values, not increments.
+#define TUNE_TRIM_STEPS 18
+
 void tb303_init(TB303 *s) {
   memset(s, 0, sizeof(*s));
   s->k0 = 1.47f; s->k1 = 0.2876302f; s->k2 = 0.0797963f;
@@ -41,6 +51,7 @@ void tb303_init(TB303 *s) {
   s->k11 = 0.0018f; s->k12 = 0.00143f;
   s->k13 = s->k11 / 10.0f; s->k14 = s->k12 / 10.0f;
   s->slide_resistor = 0.00909f; s->slide_timer = 0xff;
+  s->tune = TUNE_TRIM_STEPS;
   s->freq = 100;
   s->sequence = default_sequence; s->sequence_length = 16;
   s->pulses_per_step = 6; s->pulses_per_note = 4;
@@ -90,9 +101,9 @@ static void apply_note(TB303 *s, uint8_t packed, uint8_t prev_packed) {
   }
 }
 
-// MIDI note -> packed 303 note (note-23 | accent<<6 | slide<<7).
+// MIDI note -> packed 303 note (note-MIDI_NOTE_OFFSET | accent<<6 | slide<<7).
 void tb303_note_on(TB303 *s, uint8_t midi_note, uint8_t velocity) {
-  uint8_t packed = (uint8_t)((midi_note - 23) & 0x3f);
+  uint8_t packed = (uint8_t)((midi_note - MIDI_NOTE_OFFSET) & 0x3f);
   if (velocity > 64) packed |= 1 << 6;
   uint8_t prev = s->midi_note;
   if (prev != 0) packed |= 1 << 7;
@@ -101,17 +112,20 @@ void tb303_note_on(TB303 *s, uint8_t midi_note, uint8_t velocity) {
 }
 
 void tb303_note_off(TB303 *s, uint8_t midi_note) {
-  uint8_t n = (uint8_t)((midi_note - 23) & 0x3f);
+  uint8_t n = (uint8_t)((midi_note - MIDI_NOTE_OFFSET) & 0x3f);
   if (n == (s->midi_note & 0x3f)) s->midi_note = s->prev_midi_note, s->prev_midi_note = 0;
   if (n == (s->prev_midi_note & 0x3f)) s->prev_midi_note = 0;
   if (s->midi_note == 0 && (s->current_note & 0x80) == 0) s->vca_env_state = 3;
 }
 
 void tb303_pitch_bend(TB303 *s, int16_t bend) {
-  s->tune = (int16_t)(bend >> 7);  // +/-64 steps of the 64-steps/semitone table
+  // +/-2 semitones, centred on the tuning trim. Quantised to even steps:
+  // odd note-table indices hold inverse values, not increments (see above).
+  s->tune = (int16_t)(TUNE_TRIM_STEPS + ((bend >> 6) & ~1));
 }
 
-int16_t tb303_render(TB303 *s) {
+// Advance the oscillator one sample and return its raw (pre-filter) value.
+static int32_t vco_step(TB303 *s) {
   s->saw += s->freq;
   int32_t wave;
   if (s->waveform == 1) {  // square: interpolated per-note wavetable
@@ -127,6 +141,13 @@ int16_t tb303_render(TB303 *s) {
     }
     wave = 0x7fff - wave;
   }
+  return wave;
+}
+
+int32_t tb303_render_vco(TB303 *s) { return vco_step(s); }
+
+int16_t tb303_render(TB303 *s) {
+  int32_t wave = vco_step(s);
 
   int temp3 = (int)((wave >> 1) - (int32_t)s->cap_reso2);
   if (temp3 > 0xfe00) temp3 = 0xfe00; else if (temp3 < -65000) temp3 = -65000;

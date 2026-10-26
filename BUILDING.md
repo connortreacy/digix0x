@@ -32,6 +32,22 @@ slide (legato, no retrigger), external Start/Clock (24 ppqn) takes over the
 internal sequencer, pitch bend ±2 semitones, CC 71/74/75/76/77 drive
 reso/cutoff/env-mod/decay/accent until the matching pot moves.
 
+## PlatformIO (recommended for ESP32)
+`platformio.ini` builds the same sources per board — no code changes between envs:
+`pio run -e esp32-c6` (verified building: RAM 6.4%, Flash 36.6%), `pio run -e esp32-s3`,
+`pio run -e esp32`, `pio run -e metro_m4`. Add `-t upload` to flash. Pin defaults
+auto-select per chip in `config.h`; the audio task auto-selects Core 1 on dual-core
+parts and Core 0 on unicore parts (C2/C3/C6/H2). ESP32-C6 has no USB-MIDI device
+support (UART MIDI only); S3 adds native USB MIDI.
+
+## Validation
+`make -C host test` renders test WAVs and runs the tuning regression test.
+`make -C host validate` (needs `.venv` with numpy/scipy: `python3 -m venv .venv &&
+.venv/bin/pip install numpy scipy`) compares the raw oscillator against the
+hardware VCO captures in `../303wavs/` and writes `vco_report.csv`.
+Latest results: waveform correlation median 0.9985 (min 0.987), harmonic error
+median 0.21 dB, MIDI pitch error median −2 cents across matched notes.
+
 ## Host (no hardware)
 `make -C host test` renders `test_sequence.wav` (internal pattern) and
 `test_midi.wav` (accent/slide phrase) at 50 kHz. Use these as the reference

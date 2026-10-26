@@ -2,15 +2,18 @@
 
 # digix0x TB-303 Emulator
 
-A digital emulation of the Roland TB-303 synthesizer, running on SAMD51-based microcontrollers (e.g., Adafruit Metro M4/ItsyBitsy M4). This project recreates the iconic 303 sound with real-time audio synthesis, envelope shaping, accent and slide features, and a step sequencer.
+A digital emulation of the Roland TB-303 synthesizer. This project recreates the iconic 303 sound with real-time audio synthesis, envelope shaping, accent and slide features, and a step sequencer.
+
+> **Current development (branch `feature/esp32-dual-target`):** the synth engine now runs on both the original SAMD51 M4 boards and ESP32 (classic/S3/C6 family) from one codebase, with MIDI I/O and I2S audio running concurrently with 5 analog pot inputs. Board selection is configuration-only — see [BUILDING.md](BUILDING.md). The original single-target M4 code remains on `main`.
 
 ## Features
 
--   Classic TB-303 style sawtooth oscillator
+-   Classic TB-303 style sawtooth oscillator (plus per-note square wavetable)
 -   Four-pole resonant diode ladder filter emulation
 -   Accent and slide (portamento) handling
 -   Step sequencer with rest, accent, and slide flags
--   Real-time synthesis in a timer interrupt for authentic analog behavior
+-   MIDI input: notes (velocity > 64 = accent, legato = slide), pitch bend, CC control of all 5 knobs, external clock/start/stop (24 ppqn) with internal-sequencer fallback
+-   Real-time synthesis: timer ISR on SAMD51, I2S-DMA task on ESP32
 
 ## Hardware Requirements
 
@@ -71,9 +74,25 @@ A digital emulation of the Roland TB-303 synthesizer, running on SAMD51-based mi
 
 ## How It Works
 
--   All sound synthesis and sequencing is performed in a high-speed timer interrupt (`myISR()`).
--   The code emulates the classic TB-303’s sawtooth oscillator, diode ladder filter, envelope generators, accent, and slide.
--   Patterns, slides, and accents are hardcoded in the `sequence[]`  array, but can be edited for new patterns.
+-   The DSP engine is platform-free C99 in `tb303_core.c`: oscillator, diode ladder filter, envelope generators, accent, slide, sequencer and MIDI note/clock handling. It renders one sample per call at 50 kHz (filter internally oversampled 4× with 5 µs steps).
+-   Hardware access goes through a small HAL (`platform.h`): `platform_samd51.h` (timer ISR + DAC/I2S + USB/UART MIDI) and `platform_esp32.h` (I2S-DMA audio task + UART/USB MIDI + ADC pots). I/O selection and pin maps live in `config.h`.
+-   Patterns can be edited in the pattern headers (`everybody303.h`, `default.h`, `riser.h`) or replaced at runtime via `tb303_set_sequence()`.
+
+## Hardware Validation (303wavs)
+
+The `303wavs/` folder holds raw VCO captures from a real 303 (saw + square, MIDI notes 12–76, 96 kHz). `host/validate_vco.py` renders our oscillator for every note (`make -C host validate`) and compares pitch, period-averaged waveform shape, and harmonic content:
+
+-   Waveform correlation vs hardware: **median 0.9985, minimum 0.987** across 108 matched notes; harmonic error median **0.21 dB**. The oscillator emulation is solid.
+-   The comparison found a real bug: MIDI input played **~1030 cents flat** (the inherited `-23` note offset). Now fixed (`MIDI_NOTE_OFFSET 13` + an 18-step tuning trim in `tb303_core.c`); MIDI pitch error is now **median −2 cents**, guarded by the regression test `host/test_tuning.c` (`make -C host test`).
+-   Note the note table stores `(increment, inverse)` pairs — tuning offsets must stay even or pitch inverts. See comments in `tb303_core.c`.
+-   Through-filter comparison is still open: the captures are VCO-only, so filter validation awaits full-synth hardware recordings (play the `host/test_midi.wav` phrase on both, dial the hardware knobs to match, record, compare).
+
+## Future Work
+
+-   **Sample-rate move (48/96 kHz):** currently 50 kHz because the filter coefficient table (`303filt_coeff_5us.h`, 1024 cutoff steps × 6 gains) is tuned for 5 µs steps. Moving rates means rescaling that table by `Ts_new/Ts_old` (gains are linear in `Ts`) **plus** every other per-sample constant: note-table increments, decay multipliers (`m_new = m_old^(Fs_old/Fs_new)`), accent/slide gains, envelope timer counts, sequencer tempo. Recommended approach: refactor the core to derive constants from sample rate at init, then golden-master A/B against 50 kHz renders and re-run the 303wavs validation. Standard rates only matter for fixed-rate codecs/USB audio; PLL DACs (e.g. PCM5102A) lock at 50 kHz today.
+-   **ESP32-S3 as final form:** native USB MIDI (already gated in code), dual core at 240 MHz. ESP32-C6 works now via UART MIDI (no USB device peripheral; BLE MIDI is a possible later addition).
+-   **Configurable I/O growth:** DACs needing register setup (PCM5122, ES9038, WM8731) need an I2C init path in the HAL.
+-   **Filter hardware captures** for through-filter validation (see above).
 
 ## Customization
 

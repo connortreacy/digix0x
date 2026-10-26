@@ -52,6 +52,7 @@ void    tb303_note_off(TB303 *s, uint8_t midi_note);
 void    tb303_pitch_bend(TB303 *s, int16_t bend);  // -8192..8191
 void    tb303_clock(TB303 *s, uint8_t msg);        // 0xF8 tick, 0xFA start, 0xFC stop
 int16_t tb303_render(TB303 *s);                    // one output sample
+int32_t tb303_render_vco(TB303 *s);                // raw oscillator only (validation)
 
 #if defined(__cplusplus)
 }

@@ -33,19 +33,46 @@
 #  define CONFIG_SAMPLE_RATE 50000
 #endif
 
-// ---------- ESP32 pins (DevKit / WROOM defaults) ----------
-#define ESP32_PIN_I2S_BCK   26
-#define ESP32_PIN_I2S_WS    25
-#define ESP32_PIN_I2S_DOUT  22
-#define ESP32_PIN_MIDI_RX   16   // Serial2 RX <- optocoupler out
-#define ESP32_PIN_MIDI_TX   17   // Serial2 TX -> DIN out buffer
-#define ESP32_PIN_WAVE_SW   27   // saw/square toggle, INPUT_PULLUP
-// ADC1 pins (safe with radio off; we never enable WiFi/BT in audio build):
-#define ESP32_PIN_POT_ACCENT 36
-#define ESP32_PIN_POT_RESO   39
-#define ESP32_PIN_POT_CUTOFF 34
-#define ESP32_PIN_POT_DECAY  35
-#define ESP32_PIN_POT_ENVMOD 32
+// ---------- ESP32 pins (auto-selected per chip; override any below) ----------
+// Defaults are chosen per IDF target so a board swap needs no code edits.
+// ADC pins are always ADC1 (safe with radio off; we never enable WiFi/BT).
+#if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C2)
+#  define ESP32_PIN_I2S_BCK   21
+#  define ESP32_PIN_I2S_WS    22
+#  define ESP32_PIN_I2S_DOUT  23
+#  define ESP32_PIN_MIDI_RX   16
+#  define ESP32_PIN_MIDI_TX   17
+#  define ESP32_PIN_WAVE_SW   10
+#  define ESP32_PIN_POT_ACCENT 1
+#  define ESP32_PIN_POT_RESO   2
+#  define ESP32_PIN_POT_CUTOFF 3
+#  define ESP32_PIN_POT_DECAY  4
+#  define ESP32_PIN_POT_ENVMOD 5
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+#  define ESP32_PIN_I2S_BCK   18
+#  define ESP32_PIN_I2S_WS    19
+#  define ESP32_PIN_I2S_DOUT  20
+#  define ESP32_PIN_MIDI_RX   16
+#  define ESP32_PIN_MIDI_TX   17
+#  define ESP32_PIN_WAVE_SW   21
+#  define ESP32_PIN_POT_ACCENT 4
+#  define ESP32_PIN_POT_RESO   5
+#  define ESP32_PIN_POT_CUTOFF 6
+#  define ESP32_PIN_POT_DECAY  7
+#  define ESP32_PIN_POT_ENVMOD 8
+#else  // classic ESP32 (WROOM DevKit)
+#  define ESP32_PIN_I2S_BCK   26
+#  define ESP32_PIN_I2S_WS    25
+#  define ESP32_PIN_I2S_DOUT  22
+#  define ESP32_PIN_MIDI_RX   16
+#  define ESP32_PIN_MIDI_TX   17
+#  define ESP32_PIN_WAVE_SW   27
+#  define ESP32_PIN_POT_ACCENT 36
+#  define ESP32_PIN_POT_RESO   39
+#  define ESP32_PIN_POT_CUTOFF 34
+#  define ESP32_PIN_POT_DECAY  35
+#  define ESP32_PIN_POT_ENVMOD 32
+#endif
 
 // ---------- SAMD51 pins (Metro / ItsyBitsy M4, matches README) ----------
 #define SAMD_PIN_POT_ACCENT A1

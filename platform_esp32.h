@@ -7,7 +7,7 @@
 #include "platform.h"
 #ifdef PLATFORM_ESP32
 #include <driver/i2s.h>
-#if CONFIG_MIDI_USB && defined(ARDUINO_USB_MODE) && __has_include(<USBMIDI.h>)
+#if CONFIG_MIDI_USB && (defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2)) && __has_include(<USBMIDI.h>)
 #include <USB.h>
 #include <USBMIDI.h>
 static USBMIDI usb_midi;
@@ -120,7 +120,10 @@ void platform_setup(TB303 *synth) {
 #ifdef ESP32_USB_MIDI
   usb_midi.begin(); USB.begin();
 #endif
-  xTaskCreatePinnedToCore(audio_task, "tb303-audio", 8192, nullptr, 24, nullptr, 1);
+  // Core 1 on dual-core parts (ESP32/S3); Core 0 on unicore (C2/C3/C6/H2),
+  // where the I2S-DMA-paced task still preempts MIDI/control work cleanly.
+  const BaseType_t audio_core = portNUM_PROCESSORS > 1 ? 1 : 0;
+  xTaskCreatePinnedToCore(audio_task, "tb303-audio", 8192, nullptr, 24, nullptr, audio_core);
 }
 
 void platform_poll_midi() {  // runs on Core 0 from loop()
