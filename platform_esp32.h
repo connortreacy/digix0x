@@ -51,10 +51,11 @@ static void uart_feed(uint8_t b) {
   mq_push(e);
 }
 
-// Core 1: render blocks and pace on I2S DMA. Applies queued MIDI events
-// and control snapshots between blocks (max latency = one block, 2.7 ms).
+// Audio task: render blocks and pace on I2S DMA. Applies queued MIDI
+// events and control snapshots between blocks (max added latency = one
+// block = 64 frames = 1.28 ms at 50 kHz; DMA queue adds ~2 blocks).
 static void audio_task(void *) {
-  static int32_t buf[128 * 2];
+  static int32_t buf[64 * 2];
   for (;;) {
     MidiEvent e;
     while (platform_midi_next(&e)) {
@@ -84,8 +85,9 @@ static void audio_task(void *) {
                          g_controls.cutoff, g_controls.decay, g_controls.env_mod,
                          g_controls.waveform);
     }
-    for (int i = 0; i < 128; i++) {
-      int32_t s = (int32_t)tb303_render(g_synth) << 15;
+    for (int i = 0; i < 64; i++) {
+      // Full-resolution float path: the 12-bit DAC render would cap SNR ~74 dB.
+      int32_t s = (int32_t)(tb303_render_float(g_synth) * 2147483647.0f);
       buf[2 * i] = s; buf[2 * i + 1] = s;
     }
     size_t written;
@@ -108,7 +110,7 @@ void platform_setup(TB303 *synth) {
   cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
   cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
   cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
-  cfg.dma_buf_count = 4; cfg.dma_buf_len = 128;
+  cfg.dma_buf_count = 3; cfg.dma_buf_len = 64;  // ~1.3 ms/buffer at 50 kHz
   cfg.use_apll = true;  // cleaner clock at non-standard 50 kHz
   i2s_pin_config_t pins = {ESP32_PIN_I2S_BCK, ESP32_PIN_I2S_WS, ESP32_PIN_I2S_DOUT, -1, -1};
   i2s_driver_install(I2S_NUM_0, &cfg, 0, nullptr);
@@ -147,7 +149,12 @@ void platform_poll_midi() {  // runs on Core 0 from loop()
     v[i] = (uint16_t)(sm[i] + 0.5f);
   }
   Controls c = {v[0], v[1], v[2], v[3], v[4], (uint8_t)digitalRead(ESP32_PIN_WAVE_SW)};
-  if (memcmp(&c, &g_controls, sizeof(c)) != 0) { g_controls = c; g_controls_dirty = true; }
+  // Field-wise compare: memcmp would also test struct padding bytes.
+  if (c.accent != g_controls.accent || c.reso != g_controls.reso ||
+      c.cutoff != g_controls.cutoff || c.decay != g_controls.decay ||
+      c.env_mod != g_controls.env_mod || c.waveform != g_controls.waveform) {
+    g_controls = c; g_controls_dirty = true;
+  }
 }
 
 void platform_midi_send_clock(uint8_t msg) {

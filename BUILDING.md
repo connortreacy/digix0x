@@ -48,12 +48,20 @@ hardware VCO captures in `../303wavs/` and writes `vco_report.csv`.
 Latest results: waveform correlation median 0.9985 (min 0.987), harmonic error
 median 0.21 dB, MIDI pitch error median −2 cents across matched notes.
 
+## Mac simulator (realtime, no hardware)
+`make -C host sim && ./host/sim` plays the engine live through CoreAudio
+(core at 50 kHz resampled to the device rate). Keyboard piano
+(A W S E D... chromatic, UPPERCASE = accent, Z/X octave, SPACE = note off),
+knobs via 1–5 + -/=, V = waveform, ENTER = sequencer play/stop.
+TAB switches to the step editor for the built-in 16-step sequencer
+(arrows move/change pitch, A accent, L slide, R rest, +/- tempo).
+Any CoreMIDI source (controller or DAW) is also heard. `./host/sim --selftest`
+renders 4 s offline to `sim_test.wav` for headless checks.
+
 ## Host (no hardware)
 `make -C host test` renders `test_sequence.wav` (internal pattern) and
 `test_midi.wav` (accent/slide phrase) at 50 kHz. Use these as the reference
 takes for A/B against the hardware 303: program the same phrase, set knobs
 by ear/photo (they are not MIDI controllable), record, and compare spectrogram
-+ envelope in your DAW. Calibration note: note-table index 832 measures
-36.1 Hz; the `-23` MIDI offset is inherited from the original code, so check
-absolute tuning against the hardware unit first and adjust the offset in
-`tb303_note_on()` if needed.
++ envelope in your DAW. Tuning is calibrated against the 303wavs captures
+(MIDI pitch error median −2 cents; regression test in `make -C host test`).

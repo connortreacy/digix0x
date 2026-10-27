@@ -8,8 +8,10 @@
 #include "tb303_core.h"
 
 static TB303 synth;
+#if defined(PLATFORM_SAMD51)
 static uint16_t cc_override[128];
 static bool cc_active[128];
+#endif
 
 #if defined(PLATFORM_SAMD51)
 #include "platform_samd51.h"

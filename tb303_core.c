@@ -52,6 +52,7 @@ void tb303_init(TB303 *s) {
   s->k13 = s->k11 / 10.0f; s->k14 = s->k12 / 10.0f;
   s->slide_resistor = 0.00909f; s->slide_timer = 0xff;
   s->tune = TUNE_TRIM_STEPS;
+  s->midi_note = 0xff; s->prev_midi_note = 0xff;  // 0xff = none (packed 0 is a note)
   s->freq = 100;
   s->sequence = default_sequence; s->sequence_length = 16;
   s->pulses_per_step = 6; s->pulses_per_note = 4;
@@ -77,9 +78,11 @@ void tb303_set_controls(TB303 *s, uint16_t accent, uint16_t reso,
   s->pot_decay = decay; s->waveform = waveform;
 }
 
-static void apply_note(TB303 *s, uint8_t packed, uint8_t prev_packed) {
+// force=1 (MIDI path): packed 0 is a real note (MIDI 13), not a rest.
+// force=0 (sequencer/clock path): packed 0 encodes a rest, pitch holds.
+static void apply_note(TB303 *s, uint8_t packed, uint8_t prev_packed, uint8_t force) {
   s->current_note = packed;
-  if ((packed & 0x3f) != 0) s->current_note_value = (int16_t)((packed & 0x3f) << 6);
+  if (force || (packed & 0x3f) != 0) s->current_note_value = (int16_t)((packed & 0x3f) << 6);
   if ((prev_packed & 0x80) == 0) {           // attack unless previous slid
     s->vca_env_state = 1; s->vcf_env_state = 1; s->slide_timer = 0xff;
     uint16_t tn = (uint16_t)(s->current_note_value + s->tune);
@@ -106,16 +109,16 @@ void tb303_note_on(TB303 *s, uint8_t midi_note, uint8_t velocity) {
   uint8_t packed = (uint8_t)((midi_note - MIDI_NOTE_OFFSET) & 0x3f);
   if (velocity > 64) packed |= 1 << 6;
   uint8_t prev = s->midi_note;
-  if (prev != 0) packed |= 1 << 7;
+  if (prev != 0xff) packed |= 1 << 7;
   s->prev_midi_note = prev; s->midi_note = packed;
-  apply_note(s, packed, prev);
+  apply_note(s, packed, prev == 0xff ? 0 : prev, 1);  // 0 = no previous: attack
 }
 
 void tb303_note_off(TB303 *s, uint8_t midi_note) {
   uint8_t n = (uint8_t)((midi_note - MIDI_NOTE_OFFSET) & 0x3f);
-  if (n == (s->midi_note & 0x3f)) s->midi_note = s->prev_midi_note, s->prev_midi_note = 0;
-  if (n == (s->prev_midi_note & 0x3f)) s->prev_midi_note = 0;
-  if (s->midi_note == 0 && (s->current_note & 0x80) == 0) s->vca_env_state = 3;
+  if (n == (s->midi_note & 0x3f)) { s->midi_note = s->prev_midi_note; s->prev_midi_note = 0xff; }
+  if (n == (s->prev_midi_note & 0x3f)) s->prev_midi_note = 0xff;
+  if (s->midi_note == 0xff && (s->current_note & 0x80) == 0) s->vca_env_state = 3;
 }
 
 void tb303_pitch_bend(TB303 *s, int16_t bend) {
@@ -125,7 +128,7 @@ void tb303_pitch_bend(TB303 *s, int16_t bend) {
 }
 
 // Advance the oscillator one sample and return its raw (pre-filter) value.
-static int32_t vco_step(TB303 *s) {
+static inline int32_t vco_step(TB303 *s) {
   s->saw += s->freq;
   int32_t wave;
   if (s->waveform == 1) {  // square: interpolated per-note wavetable
@@ -146,7 +149,11 @@ static int32_t vco_step(TB303 *s) {
 
 int32_t tb303_render_vco(TB303 *s) { return vco_step(s); }
 
-int16_t tb303_render(TB303 *s) {
+// Full per-sample body. Returns the pre-quantisation output (float,
+// roughly +/-32768 scale); dac_out optionally receives the legacy
+// 12-bit DAC value ((expr + 0x8000) >> 4) so one call can feed both
+// a DAC and a high-resolution I2S path without advancing state twice.
+static float render_body(TB303 *s, int16_t *dac_out) {
   int32_t wave = vco_step(s);
 
   int temp3 = (int)((wave >> 1) - (int32_t)s->cap_reso2);
@@ -160,22 +167,32 @@ int16_t tb303_render(TB303 *s) {
     temp3 = (tanh_table[temp4] * (256 - temp3) + tanh_table[temp4 + 1] * temp3) >> 8;
   }
 
+  // Filter state/coefficients cached in locals: on FPU-less-pointer-chasing
+  // targets (RISC-V/Xtensa at -Os) struct reloads per iteration add up.
+  float cap1 = s->cap1, cap2 = s->cap2, cap3 = s->cap3, cap4 = s->cap4;
+  float cap_out = s->cap_out, cap_reso = s->cap_reso, cap_reso2 = s->cap_reso2;
+  const float k0 = s->k0, k1 = s->k1, k2 = s->k2, k3 = s->k3, k4 = s->k4, k5 = s->k5;
+  const float reso = s->resonance, k6 = s->k6, k10 = s->k10;
+  const float drive = k0 * (float)temp3;
   for (int i = 0; i < 4; i++) {
-    s->cap1 += s->k1 * (s->k0 * temp3 - (s->cap1 + s->cap2));
-    s->cap2 += s->k2 * s->cap1;
-    s->cap3 += s->k3 * (s->cap2 - (s->cap3 + s->cap4));
-    float t1 = s->k4 * s->cap3;
-    s->cap4 += t1; t1 -= s->k5 * s->cap_out; s->cap_out += t1;
-    float t2 = s->resonance * t1 - s->k6 * (s->cap_reso - s->cap_reso2);
-    s->cap_reso += t2; s->cap_reso2 += t2 - s->k10 * s->cap_reso2;
+    cap1 += k1 * (drive - (cap1 + cap2));
+    cap2 += k2 * cap1;
+    cap3 += k3 * (cap2 - (cap3 + cap4));
+    float t1 = k4 * cap3;
+    cap4 += t1; t1 -= k5 * cap_out; cap_out += t1;
+    float t2 = reso * t1 - k6 * (cap_reso - cap_reso2);
+    cap_reso += t2; cap_reso2 += t2 - k10 * cap_reso2;
   }
-  s->average = 4.0f * s->cap_out;
-  float t1 = s->average - s->last_average;
-  s->last_average = s->average; s->average = 0;
+  s->cap1 = cap1; s->cap2 = cap2; s->cap3 = cap3; s->cap4 = cap4;
+  s->cap_out = cap_out; s->cap_reso = cap_reso; s->cap_reso2 = cap_reso2;
+  float t1 = 4.0f * cap_out - s->last_average;
+  s->last_average = 4.0f * cap_out;
   s->cap_vca1 += t1 - s->k7 * s->cap_vca1;
   s->cap_vca2 += t1 - s->k8 * s->cap_vca2;
-  int16_t output = (int16_t)(((s->vca_env + 2.855f * s->accent_vca) *
-                   (s->cap_vca1 + 0.42f * s->resonance * s->cap_vca2) * 0.04f) + 0x8000) >> 4;
+  float expr = (s->vca_env + 2.855f * s->accent_vca) *
+               (s->cap_vca1 + 0.42f * reso * s->cap_vca2) * 0.04f;
+  int16_t output = (int16_t)(expr + 0x8000) >> 4;
+  if (dac_out) *dac_out = output;
 
   if (++s->timer2 == 3) {
     s->timer2 = 0;
@@ -226,10 +243,11 @@ int16_t tb303_render(TB303 *s) {
       if (s->vca_env < 0.000015f) { s->vca_env = 0; s->vca_env_state = 0; }
     }
   } else if (s->vca_env_state == 3) {
-    s->vca_delay_cap *= 0.9998f; s->vca_env += 0.004f * (s->last_vca_env - s->vca_env);
+    // Release decays exponentially to zero (the original code's
+    // last_vca_env was never assigned, so it always targeted 0).
+    s->vca_delay_cap *= 0.9998f; s->vca_env *= 0.996f;
     if (s->vca_env <= 0.000015f) { s->vca_env = 0; s->vca_env_state = 0; }
   }
-  s->last_vca_env = s->vca_env;
 
   // slide
   if (s->slide_timer != 0xff && ++s->slide_timer == 10) {
@@ -250,12 +268,23 @@ int16_t tb303_render(TB303 *s) {
       s->step_counter = 0;
       uint8_t prev = s->current_note;
       if (++s->current_step >= s->sequence_length) s->current_step = 0;
-      apply_note(s, s->sequence[s->current_step], prev);
+      apply_note(s, s->sequence[s->current_step], prev, 0);
     } else if (s->step_counter == 7 && (s->current_note & 0x80) == 0) {
       s->vca_env_state = 3;
     }
   }
-  return output;
+  return expr;
+}
+
+int16_t tb303_render(TB303 *s) {
+  int16_t dac;
+  render_body(s, &dac);
+  return dac;
+}
+
+float tb303_render_float(TB303 *s) {
+  float f = render_body(s, NULL) * (1.0f / 32768.0f);
+  return f > 1.0f ? 1.0f : f < -1.0f ? -1.0f : f;
 }
 
 void tb303_clock(TB303 *s, uint8_t msg) {
@@ -266,7 +295,7 @@ void tb303_clock(TB303 *s, uint8_t msg) {
       s->pulse_counter = 0;
       uint8_t prev = s->current_note;
       if (++s->current_step >= s->sequence_length) s->current_step = 0;
-      apply_note(s, s->sequence[s->current_step], prev);
+      apply_note(s, s->sequence[s->current_step], prev, 0);
     } else if (s->pulse_counter == s->pulses_per_note &&
                (s->current_note & 0x80) == 0) {
       s->vca_env_state = 3;

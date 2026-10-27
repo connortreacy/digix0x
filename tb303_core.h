@@ -20,7 +20,7 @@ typedef struct {
   float cap1, cap2, cap3, cap4, cap_out, cap_reso, cap_vca1, cap_vca2, cap_reso2;
   float k0, k1, k2, k3, k4, k5, k6, k10, k7, k8;
   // VCA env
-  float vca_env, vca_env_decay, last_vca_env, vca_delay_cap;
+  float vca_env, vca_env_decay, vca_delay_cap;
   uint8_t vca_env_timer1, vca_env_timer2, vca_env_state;
   // VCF env
   float vcf_env, vcf_env_decay; uint16_t vcf_env_timer1; uint8_t vcf_env_state;
@@ -51,7 +51,8 @@ void    tb303_note_on(TB303 *s, uint8_t midi_note, uint8_t velocity);
 void    tb303_note_off(TB303 *s, uint8_t midi_note);
 void    tb303_pitch_bend(TB303 *s, int16_t bend);  // -8192..8191
 void    tb303_clock(TB303 *s, uint8_t msg);        // 0xF8 tick, 0xFA start, 0xFC stop
-int16_t tb303_render(TB303 *s);                    // one output sample
+int16_t tb303_render(TB303 *s);                    // one sample, legacy 12-bit DAC scale
+float   tb303_render_float(TB303 *s);              // one sample, -1..1 full resolution (I2S/sim)
 int32_t tb303_render_vco(TB303 *s);                // raw oscillator only (validation)
 
 #if defined(__cplusplus)

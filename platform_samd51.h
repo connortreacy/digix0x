@@ -49,13 +49,18 @@ static void uart_feed(uint8_t b) {
 }
 
 static void samd_isr() {
+#if CONFIG_AUDIO_OUT == AUDIO_DAC
   int16_t out = tb303_render(g_synth);
-#if CONFIG_AUDIO_OUT != AUDIO_I2S
   int32_t dac = (int32_t)out - 0x0500;
   analogWrite(A0, dac < 0 ? 0 : dac > 4095 ? 4095 : dac);
+#else
+  // One render feeds both: float for I2S (full resolution), DAC derived.
+  float f = tb303_render_float(g_synth);
+#if CONFIG_AUDIO_OUT != AUDIO_I2S
+  int32_t dac = (int32_t)((f + 1.0f) * 2048.0f) - 0x0500;
+  analogWrite(A0, dac < 0 ? 0 : dac > 4095 ? 4095 : dac);
 #endif
-#if CONFIG_AUDIO_OUT != AUDIO_DAC
-  int32_t s = (int32_t)out << 15;
+  int32_t s = (int32_t)(f * 2147483647.0f);
   i2s_out.write(s, s);
 #endif
 }
@@ -104,13 +109,22 @@ void platform_midi_send_clock(uint8_t msg) {
 #endif
 }
 
+// One ADC conversion per call (round-robin): loop() drains MIDI between
+// calls, so note latency stays ~1 conversion instead of 5 per refresh.
 Controls platform_read_controls() {
-  Controls c;
-  c.accent = analogRead(SAMD_PIN_POT_ACCENT);
-  c.reso = analogRead(SAMD_PIN_POT_RESO);
-  c.cutoff = analogRead(SAMD_PIN_POT_CUTOFF);
-  c.decay = analogRead(SAMD_PIN_POT_DECAY);
-  c.env_mod = analogRead(SAMD_PIN_POT_ENVMOD);
+  static Controls c;
+  static uint8_t idx;
+  static const uint8_t pins[5] = {SAMD_PIN_POT_ACCENT, SAMD_PIN_POT_RESO,
+                                  SAMD_PIN_POT_CUTOFF, SAMD_PIN_POT_DECAY, SAMD_PIN_POT_ENVMOD};
+  uint16_t v = analogRead(pins[idx]);
+  switch (idx) {
+    case 0: c.accent = v; break;
+    case 1: c.reso = v; break;
+    case 2: c.cutoff = v; break;
+    case 3: c.decay = v; break;
+    default: c.env_mod = v; break;
+  }
+  idx = (idx + 1) % 5;
   c.waveform = digitalRead(SAMD_PIN_WAVE_SW);
   return c;
 }
