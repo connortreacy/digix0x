@@ -17,7 +17,9 @@ A digital emulation of the Roland TB-303 synthesizer. This project recreates the
 
 ## Listen
 
-▶ **[test_sweep.wav](host/test_sweep.wav)** — the internal pattern rendered by the exact firmware engine (float output path, 50 kHz):
+<video src="host/test_sweep.mp4" controls title="digix0x cutoff/resonance sweep"></video>
+
+▶ Lossless master: **[test_sweep.wav](host/test_sweep.wav)** — the internal pattern rendered by the exact firmware engine (float output path, 50 kHz):
 
 -   0:00–3.84 — hold (cutoff 50, resonance 50)
 -   3.84–7.68 — cutoff sweep 0 → 100
