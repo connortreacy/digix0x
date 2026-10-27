@@ -15,6 +15,17 @@ A digital emulation of the Roland TB-303 synthesizer. This project recreates the
 -   MIDI input: notes (velocity > 64 = accent, legato = slide), pitch bend, CC control of all 5 knobs, external clock/start/stop (24 ppqn) with internal-sequencer fallback
 -   Real-time synthesis: timer ISR on SAMD51, I2S-DMA task on ESP32
 
+## Listen
+
+▶ **[test_sweep.wav](host/test_sweep.wav)** — the internal pattern rendered by the exact firmware engine (float output path, 50 kHz):
+
+-   0:00–3.84 — hold (cutoff 50, resonance 50)
+-   3.84–7.68 — cutoff sweep 0 → 100
+-   7.68–9.60 — cutoff back to 50
+-   9.60–13.44 — resonance sweep 0 → 100
+
+Regenerate with the host harness (see [BUILDING.md](BUILDING.md)); play it live with keys in the Mac simulator (`make -C host sim`).
+
 ## Hardware Requirements
 
 One codebase, several boards — selection is by build environment / `config.h` only:
