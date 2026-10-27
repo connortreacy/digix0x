@@ -17,60 +17,53 @@ A digital emulation of the Roland TB-303 synthesizer. This project recreates the
 
 ## Hardware Requirements
 
--   **Microcontroller:**  SAMD51-based Arduino-compatible board (e.g. Adafruit Metro M4 Express, ItsyBitsy M4)
--   **Controls:**  Potentiometers or CV sources for:
-    -   Resonance (A2)
-    -   Cutoff (A3)
-    -   Envelope Modulation (A5)
-    -   Decay (A4)
-    -   Accent (A1)
--   **Audio Output:**  Use A0 (onboard DAC if available) or an external DAC (see below)
--   **Power:**  3.3V or 5V (check your board’s requirements)
+One codebase, several boards — selection is by build environment / `config.h` only:
 
-## Audio Output Options
+| Board | Audio | MIDI | Notes |
+|---|---|---|---|
+| Adafruit Metro / ItsyBitsy M4 (SAMD51) | Onboard 12-bit DAC (A0) and/or I2S | USB (MIDIUSB) + UART (Serial1) | The original target |
+| ESP32 (WROOM DevKit) | I2S | UART | No USB device port |
+| ESP32-S3 DevKit | I2S | UART + native USB | Planned final form |
+| ESP32-C6 DevKit | I2S | UART | Single-core; no USB MIDI (USB is debug/serial) |
+| Mac (simulator) | CoreAudio | Keyboard + CoreMIDI | No hardware needed — see below |
 
-**1. Onboard DAC (Recommended for Simplicity)**
+-   **Controls:** 5 potentiometers (or CV sources) for Accent / Resonance / Cutoff / Decay / Envelope Modulation, sampled concurrently with audio and MIDI. SAMD pins A1–A5; ESP32 ADC1 pins auto-selected per chip in `config.h`. Plus a saw/square toggle switch.
+-   **MIDI wiring:** DIN/TRS via the standard optocoupler input circuit into the board UART (31250 baud). USB MIDI where the chip supports it.
+-   **Power:**  3.3V logic throughout (check your board’s requirements).
 
--   Many SAMD51 boards provide a 12-bit DAC on A0.
--   Use `analogWrite(A0, value);`  in the code.
--   Add a simple RC low-pass filter (e.g., 1kΩ resistor in series with output, 10nF capacitor from output to GND) for audio smoothing.
+## Audio Output
 
-**2. External DAC (For Higher Quality)**
+**1. I2S DAC (recommended)** — any config-free I2S DAC at 50 kHz, 32-bit frames: **PCM5102A** breakout (line-level, target part), MAX98357A (speaker amp, bench use), UDA1334A. No MCLK or register setup needed; PLL parts lock to the non-standard 50 kHz. I2S receives the full-resolution float render (the 12-bit path below measures ~27 dB more quantization hiss — A/B files: `host/compare_12bit.wav` vs `host/compare_32bit.wav`, rendered by the host harness).
 
--   [MCP4725 (I2C)](https://www.adafruit.com/product/935)  or [MCP4921 (SPI)](https://www.adafruit.com/product/882)
--   Wire VCC, GND, SDA/SCL (I2C) or MOSI/SCK/CS (SPI) as per your DAC and board.
--   Use the appropriate Arduino library (e.g., [Adafruit_MCP4725](https://github.com/adafruit/Adafruit_MCP4725)).
--   Replace all `analogWrite(A0, ...)`  calls with your DAC’s output function.
--   Note: ItsyBitsy M4 doesn't support i2s DACs like PCM5102 [source](https://www.mouser.com/pdfdocs/introducing-adafruit-itsybitsy-m4.pdf?srsltid=AfmBOopDvCFJST56uh57h6QK3D61dIotFfml4tWEUYYRJc_unQqp5E1G)
+**2. Onboard DAC (SAMD51 only)** — 12-bit DAC on A0 with a simple RC low-pass (e.g. 1kΩ series + 10nF to GND). Zero extra parts; this is the legacy path and its output value is bit-identical to the original code.
+
+DACs needing I2C register init (PCM5122, ES9038, WM8731) are not yet supported — see Future Work. Note: ItsyBitsy M4 doesn't support I2S DACs like PCM5102 [source](https://www.mouser.com/pdfdocs/introducing-adafruit-itsybitsy-m4.pdf?srsltid=AfmBOopDvCFJST56uh57h6QK3D61dIotFfml4tWEUYYRJc_unQqp5E1G) — use its onboard DAC.
 
 ## Software Requirements
 
--   **Arduino IDE**  (or PlatformIO)
--   **Board Support Package:**  Install “Adafruit SAMD Boards” via the Arduino Boards Manager.
--   **Libraries:**
-    -   `SAMD51_InterruptTimer.h`  (or a compatible timer interrupt library, e.g., [Adafruit_ZeroTimer](https://github.com/adafruit/Adafruit_ZeroTimer))
-    -   For external DAC: corresponding libraries (see above)
--   **Required Files:**  Ensure these header files (lookup tables) are in the same directory as `303_m4_fusion.ino`:
-    -   `303filt_tanh.h`
-    -   `sinetable.h`
-    -   `midi_note_table_50x64.h`
-    -   `303filt_coeff_5us.h`
-    -   `303_vcf_decay_table.h`
+-   **PlatformIO** (recommended): `platformio.ini` provides `esp32-c6`, `esp32-s3`, `esp32` and `metro_m4` environments; all verified building. Libraries resolve automatically.
+-   **Arduino IDE** also works for the SAMD build: “Adafruit SAMD Boards” via Boards Manager, plus `SAMD51_InterruptTimer`, `MIDIUSB`, and (only for I2S output) Adafruit Zero I2S. Open `digix0x.ino`.
+-   **Host tools (Mac/Linux):** a C compiler for the simulator/tests; Python 3 + numpy/scipy in `.venv` for the hardware-validation scripts.
+
+All lookup tables and sources must stay together in the sketch folder (`303filt_*.h`, `midi_note_table_48k_invert3.h`, `saw_edge2.h`, `sqwavs.h`, `sinetable.h`, `tb303_core.c`, …).
 
 ## Setup and Usage
 
-1.  **Connect Controls:**  
-    Wire potentiometers (or CV) to the analog pins as listed in Hardware Requirements.
-2.  **Audio Out:**  
-    Connect A0 (with a low-pass filter) to an amplifier or audio interface.
-3.  **Install Libraries:**  
-    Install any required libraries via Arduino Library Manager or PlatformIO.
-4.  **Open and Compile:**  
-    Open `303_m4_fusion.ino`  in Arduino IDE.
-5.  **Upload:**  
-    Select your board and port, compile, and upload.
-6.  **Play:**  
-    The built-in sequencer will play a preset pattern; adjust the pots for classic 303 tweaking.
+**No hardware (Mac simulator):**
+```
+make -C host sim && ./host/sim
+```
+Realtime playback with keyboard piano, knob keys, a 16-step sequencer/editor and CoreMIDI input — see [BUILDING.md](BUILDING.md) for the key map.
+
+**ESP32:**
+```
+pio run -e esp32-c6 -t upload   # or esp32-s3 / esp32
+```
+Wire the I2S DAC and up to 5 pots per `config.h` (defaults per chip are in that file), connect DIN MIDI via optocoupler, power up — the internal pattern plays immediately; send MIDI clock/notes from a DAW to take over.
+
+**SAMD51:** open `digix0x.ino` in Arduino IDE (or `pio run -e metro_m4 -t upload`), select your M4 board, upload. Pots on A1–A5, audio from A0 and/or I2S per `config.h`.
+
+Full wiring, build and validation instructions: [BUILDING.md](BUILDING.md).
 
 ## How It Works
 
@@ -96,15 +89,14 @@ The `303wavs/` folder holds raw VCO captures from a real 303 (saw + square, MIDI
 
 ## Customization
 
--   **Patterns:**  
-    Edit the `sequence[]`  array for your own sequences (see comments in code).
--   **Filter/Envelope Behavior:**  
-    Adjust coefficients and tables for different response curves or time constants.
--   **External Control:**  
-    Modify `loop()`  to add MIDI or CV/Gate input for more flexible sequencing.
+-   **Patterns:** edit the pattern headers (`everybody303.h` is the default; `default.h`, `riser.h` are alternates) or call `tb303_set_sequence()` at runtime. Pattern bytes are `note | accent<<6 | slide<<7`, note 0 = rest.
+-   **I/O selection:** everything lives in `config.h` — audio out (DAC / I2S / both), MIDI sources (USB / UART), sample rate, and all pin assignments (ESP32 defaults auto-select per chip).
+-   **MIDI control:** CC 71/74/75/76/77 drive Resonance/Cutoff/Env-Mod/Decay/Accent until the matching physical pot moves; velocity > 64 accents; overlapping notes slide.
+-   **Filter/envelope behaviour:** coefficients and tables are in `303filt_coeff_5us.h` and `303_vcf_decay_table.h` — see the tuning/validation notes above before touching them.
+-   **Trying sounds without hardware:** the Mac simulator (`host/sim.c`) and offline renders (`make -C host test`) run the identical engine.
 
 ## References
 
 -   [Roland TB-303](https://en.wikipedia.org/wiki/Roland_TB-303)  background
 -   [Adafruit Metro M4 Express](https://www.adafruit.com/product/3382)
--   [Adafruit MCP4725 DAC](https://www.adafruit.com/product/935)
+-   [BUILDING.md](BUILDING.md) — wiring, builds, simulator keys, validation workflow
