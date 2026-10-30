@@ -128,13 +128,29 @@ void platform_setup(TB303 *synth) {
   xTaskCreatePinnedToCore(audio_task, "tb303-audio", 8192, nullptr, 24, nullptr, audio_core);
 }
 
+// Map one USB-MIDI packet (same layout as SAMD MIDIUSB) into the queue.
+#ifdef ESP32_USB_MIDI
+static void usb_packet_feed(uint8_t b1, uint8_t b2, uint8_t b3) {
+  MidiEvent e = {}; uint8_t cmd = b1 & 0xF0;
+  if (b1 == 0xF8) e.type = MIDI_EV_CLOCK;
+  else if (b1 == 0xFA) e.type = MIDI_EV_START;
+  else if (b1 == 0xFC) e.type = MIDI_EV_STOP;
+  else if (cmd == 0x90 && b3 > 0) { e.type = MIDI_EV_NOTE_ON; e.note = b2; e.velocity = b3; }
+  else if (cmd == 0x80 || cmd == 0x90) { e.type = MIDI_EV_NOTE_OFF; e.note = b2; e.velocity = b3; }
+  else if (cmd == 0xE0) { e.type = MIDI_EV_PITCH_BEND; e.value = (int16_t)((b3 << 7) | b2) - 8192; }
+  else if (cmd == 0xB0) { e.type = MIDI_EV_CC; e.cc = b2; e.value = b3; }
+  else return;
+  mq_push(e);
+}
+#endif
+
 void platform_poll_midi() {  // runs on Core 0 from loop()
 #if CONFIG_MIDI_UART
   while (Serial2.available()) uart_feed((uint8_t)Serial2.read());
 #endif
 #ifdef ESP32_USB_MIDI
-  // USB-MIDI via Arduino class delivers parsed packets; map like SAMD path.
-  // (Kept minimal: note/clock/CC coverage matches the UART parser.)
+  midiEventPacket_t p;
+  while (usb_midi.readPacket(&p)) usb_packet_feed(p.byte1, p.byte2, p.byte3);
 #endif
   // 1 kHz control scan with 1-pole smoothing (ESP32 ADC is noisy).
   static uint32_t last_ms;
@@ -160,6 +176,10 @@ void platform_poll_midi() {  // runs on Core 0 from loop()
 void platform_midi_send_clock(uint8_t msg) {
 #if CONFIG_MIDI_UART
   Serial2.write(msg);
+#endif
+#ifdef ESP32_USB_MIDI
+  midiEventPacket_t p = {0x0F, msg, 0, 0};  // CIN 0xF: single-byte realtime
+  usb_midi.writePacket(&p);
 #endif
 }
 
