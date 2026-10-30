@@ -14,6 +14,13 @@ static USBMIDI usb_midi;
 #define ESP32_USB_MIDI 1
 #endif
 
+#include "controls_latch.h"
+static ControlLatch g_latch[5];
+static const uint8_t g_latch_cc[5] = {MIDI_CC_ACCENT, MIDI_CC_RESO, MIDI_CC_CUTOFF,
+                                      MIDI_CC_DECAY, MIDI_CC_ENVMOD};
+static volatile uint16_t g_cc_shadow[128];
+static volatile uint8_t g_cc_dirty[128];
+
 static TB303 *g_synth;
 static MidiEvent g_mq[64];
 static volatile uint8_t g_mq_head, g_mq_tail;
@@ -66,16 +73,9 @@ static void audio_task(void *) {
         case MIDI_EV_CLOCK: tb303_clock(g_synth, 0xF8); break;
         case MIDI_EV_START: tb303_clock(g_synth, 0xFA); break;
         case MIDI_EV_STOP: tb303_clock(g_synth, 0xFC); break;
-        case MIDI_EV_CC: {  // CC writes the same snapshot the pots write
-          uint16_t v = (uint16_t)(e.value << 3);
-          if (e.cc == MIDI_CC_ACCENT) g_controls.accent = v;
-          else if (e.cc == MIDI_CC_RESO) g_controls.reso = v;
-          else if (e.cc == MIDI_CC_CUTOFF) g_controls.cutoff = v;
-          else if (e.cc == MIDI_CC_DECAY) g_controls.decay = v;
-          else if (e.cc == MIDI_CC_ENVMOD) g_controls.env_mod = v;
-          else break;
-          g_controls_dirty = true; break;
-        }
+        case MIDI_EV_CC:  // staged for the latch in platform_poll_midi()
+          if (e.cc < 128) { g_cc_shadow[e.cc] = (uint16_t)(e.value << 3); g_cc_dirty[e.cc] = 1; }
+          break;
         default: break;
       }
     }
@@ -164,6 +164,14 @@ void platform_poll_midi() {  // runs on Core 0 from loop()
     sm[i] += 0.25f * ((float)analogRead(pins[i]) - sm[i]);
     v[i] = (uint16_t)(sm[i] + 0.5f);
   }
+  for (int i = 0; i < 5; i++)  // hand newly staged CC values to the latch
+    if (g_cc_dirty[g_latch_cc[i]]) {
+      g_cc_dirty[g_latch_cc[i]] = 0;
+      latch_cc(&g_latch[i], g_cc_shadow[g_latch_cc[i]]);
+    }
+  v[0] = latch_pot(&g_latch[0], v[0]); v[1] = latch_pot(&g_latch[1], v[1]);
+  v[2] = latch_pot(&g_latch[2], v[2]); v[3] = latch_pot(&g_latch[3], v[3]);
+  v[4] = latch_pot(&g_latch[4], v[4]);
   Controls c = {v[0], v[1], v[2], v[3], v[4], (uint8_t)digitalRead(ESP32_PIN_WAVE_SW)};
   // Field-wise compare: memcmp would also test struct padding bytes.
   if (c.accent != g_controls.accent || c.reso != g_controls.reso ||

@@ -6,6 +6,8 @@ sim: sim.c ../tb303_core.c ../tb303_core.h ../config.h
 	clang -O2 -std=c99 -Wall -Wextra -Wno-missing-braces -I.. -o $@ sim.c ../tb303_core.c -lm -framework AudioToolbox -framework CoreMIDI -framework CoreFoundation
 simtest: sim
 	./sim --selftest
+harness: harness.c
+	clang -O2 -std=c99 -Wall -Wextra -I.. -o $@ harness.c -framework CoreMIDI -framework CoreFoundation
 bench: bench.c ../tb303_core.c ../tb303_core.h ../config.h
 	$(CC) -O3 -std=c99 -Wall -Wextra -Wno-missing-braces -I.. -o $@ bench.c ../tb303_core.c -lm
 	./bench

@@ -9,8 +9,11 @@
 
 static TB303 synth;
 #if defined(PLATFORM_SAMD51)
-static uint16_t cc_override[128];
-static bool cc_active[128];
+#include "controls_latch.h"
+// Control order: 0 accent, 1 reso, 2 cutoff, 3 decay, 4 env-mod.
+static ControlLatch g_latch[5];
+static const uint8_t g_latch_cc[5] = {MIDI_CC_ACCENT, MIDI_CC_RESO, MIDI_CC_CUTOFF,
+                                      MIDI_CC_DECAY, MIDI_CC_ENVMOD};
 #endif
 
 #if defined(PLATFORM_SAMD51)
@@ -39,7 +42,8 @@ void loop() {
       case MIDI_EV_START: tb303_clock(&synth, 0xFA); break;
       case MIDI_EV_STOP: tb303_clock(&synth, 0xFC); break;
       case MIDI_EV_CC:
-        if (e.cc < 128) { cc_override[e.cc] = (uint16_t)(e.value << 3); cc_active[e.cc] = true; }
+        for (int i = 0; i < 5; i++)
+          if (e.cc == g_latch_cc[i]) latch_cc(&g_latch[i], (uint16_t)(e.value << 3));
         break;
       default: break;
     }
@@ -50,11 +54,11 @@ void loop() {
 #endif
   }
   Controls c = platform_read_controls();
-  if (cc_active[MIDI_CC_ACCENT]) c.accent = cc_override[MIDI_CC_ACCENT];
-  if (cc_active[MIDI_CC_RESO]) c.reso = cc_override[MIDI_CC_RESO];
-  if (cc_active[MIDI_CC_CUTOFF]) c.cutoff = cc_override[MIDI_CC_CUTOFF];
-  if (cc_active[MIDI_CC_DECAY]) c.decay = cc_override[MIDI_CC_DECAY];
-  if (cc_active[MIDI_CC_ENVMOD]) c.env_mod = cc_override[MIDI_CC_ENVMOD];
+  c.accent = latch_pot(&g_latch[0], c.accent);
+  c.reso = latch_pot(&g_latch[1], c.reso);
+  c.cutoff = latch_pot(&g_latch[2], c.cutoff);
+  c.decay = latch_pot(&g_latch[3], c.decay);
+  c.env_mod = latch_pot(&g_latch[4], c.env_mod);
   tb303_set_controls(&synth, c.accent, c.reso, c.cutoff, c.decay, c.env_mod, c.waveform);
 #else
   // ESP32: audio task (Core 1) drains the queue and applies controls;
