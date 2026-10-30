@@ -10,6 +10,12 @@ all hardware access goes through `platform.h`. Configure I/O in `config.h`.
 - `platform_esp32.h` — ESP32: I2S DMA task on Core 1, UART MIDI (Serial2) + optional S2/S3 USB MIDI, 5× ADC1 pots, Core 0 polls controls/MIDI.
 - `host/` — native build that renders test WAVs (`make -C host test`).
 
+> Feather M4 note: if a software-reset upload stalls at "Waiting for the
+> new upload port", double-tap the reset button (FEATHERBOOT drive) and
+> re-run the upload — uploads from the bootloader are reliable. On this
+> board I2S uses D1/D10/D11, so DIN MIDI (Serial1) conflicts with I2S;
+> use USB MIDI.
+
 ## M4 (Metro / ItsyBitsy M4) — unchanged workflow
 Arduino IDE, Adafruit SAMD core, libraries `SAMD51_InterruptTimer`,
 `MIDIUSB`, and `Adafruit ZeroI2S` only if `CONFIG_AUDIO_OUT` uses I2S.

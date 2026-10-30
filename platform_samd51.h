@@ -61,7 +61,11 @@ static void samd_isr() {
   analogWrite(A0, dac < 0 ? 0 : dac > 4095 ? 4095 : dac);
 #endif
   int32_t s = (int32_t)(f * 2147483647.0f);
-  i2s_out.write(s, s);
+  // write() blocks until the frame clock consumes the sample; calling it
+  // unconditionally makes this ISR last the whole period and starves
+  // loop() (MIDI/pots/serial). Both clocks derive from the same DFLL,
+  // so readiness is phase-locked and the guard costs ~nothing.
+  if (i2s_out.txReady()) i2s_out.write(s, s);
 #endif
 }
 
