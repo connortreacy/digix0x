@@ -48,26 +48,41 @@ static void uart_feed(uint8_t b) {
   mq_push(e);
 }
 
-static void samd_isr() {
+// One audio frame: render once, feed DAC (all modes) and stash I2S sample.
+static int32_t i2s_pending;
+static void audio_tick() {
 #if CONFIG_AUDIO_OUT == AUDIO_DAC
   int16_t out = tb303_render(g_synth);
   int32_t dac = (int32_t)out - 0x0500;
   analogWrite(A0, dac < 0 ? 0 : dac > 4095 ? 4095 : dac);
 #else
-  // One render feeds both: float for I2S (full resolution), DAC derived.
   float f = tb303_render_float(g_synth);
 #if CONFIG_AUDIO_OUT != AUDIO_I2S
   int32_t dac = (int32_t)((f + 1.0f) * 2048.0f) - 0x0500;
   analogWrite(A0, dac < 0 ? 0 : dac > 4095 ? 4095 : dac);
 #endif
-  int32_t s = (int32_t)(f * 2147483647.0f);
-  // write() blocks until the frame clock consumes the sample; calling it
-  // unconditionally makes this ISR last the whole period and starves
-  // loop() (MIDI/pots/serial). Both clocks derive from the same DFLL,
-  // so readiness is phase-locked and the guard costs ~nothing.
-  if (i2s_out.txReady()) i2s_out.write(s, s);
+  i2s_pending = (int32_t)(f * 2147483647.0f);
 #endif
 }
+
+static void samd_isr() { audio_tick(); }  // DAC-only pacing (TC timer)
+
+#if CONFIG_AUDIO_OUT != AUDIO_DAC
+// I2S modes are paced by the I2S peripheral itself (TXRDY interrupt):
+// one render per stereo frame, written slot-by-slot. A free-running
+// timer at the same nominal rate drifts against the I2S clock and
+// corrupts frames in bursts (audible crackle), so the timer is not
+// used at all in this configuration. Mono signal: L == R, so slot
+// phase does not matter.
+static volatile uint8_t i2s_slot;
+extern "C" void I2S_Handler(void) {
+  if (I2S->INTFLAG.bit.TXRDY0) {
+    if (i2s_slot == 0) audio_tick();
+    I2S->TXDATA.reg = (uint32_t)i2s_pending;
+    i2s_slot ^= 1;
+  }
+}
+#endif
 
 void platform_setup(TB303 *synth) {
   g_synth = synth;
@@ -76,10 +91,14 @@ void platform_setup(TB303 *synth) {
 #if CONFIG_MIDI_UART
   Serial1.begin(31250);
 #endif
-#if CONFIG_AUDIO_OUT != AUDIO_DAC
-  i2s_out.begin(I2S_32_BIT, CONFIG_SAMPLE_RATE); i2s_out.enableTx();
-#endif
+#if CONFIG_AUDIO_OUT == AUDIO_DAC
   TC.startTimer(1000000 / CONFIG_SAMPLE_RATE, samd_isr);
+#else
+  i2s_out.begin(I2S_32_BIT, CONFIG_SAMPLE_RATE); i2s_out.enableTx();
+  NVIC_SetPriority(I2S_IRQn, 2);
+  NVIC_EnableIRQ(I2S_IRQn);
+  I2S->INTENSET.bit.TXRDY0 = 1;
+#endif
 }
 
 void platform_poll_midi() {
