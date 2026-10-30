@@ -1,7 +1,12 @@
 // TB-303 DSP core implementation. See tb303_core.h.
 // Filter/envelope math transcribed verbatim from digix0x.ino (main bec716c);
 // MIDI gate/accent/slide semantics from midi-current (d23eb96).
+// Tables are tuned at REF_RATE; other CONFIG_SAMPLE_RATE values derive
+// every per-sample constant from the rate at init (see tb303_init).
+#include <math.h>
 #include "tb303_core.h"
+
+#define REF_RATE 50000.0f
 
 static const uint16_t tanh_table[256] = {
 #include "303filt_tanh.h"
@@ -24,7 +29,6 @@ static const int16_t sq_wavs[64][1024] = {
 
 #define HPF_Q 0.4f
 #define HPF_W 8.0f
-#define Ts 0.000005f
 
 static const uint8_t default_sequence[16] = {
 #include "everybody303.h"
@@ -42,15 +46,33 @@ static const uint8_t default_sequence[16] = {
 
 void tb303_init(TB303 *s) {
   memset(s, 0, sizeof(*s));
+  // Rate derivation: integrator gains scale with step (x REF/Fs),
+  // per-sample decay multipliers m become m^(REF/Fs), approach
+  // coefficients a become 1-(1-a)^(REF/Fs), counts scale with Fs/REF.
+  const float R = REF_RATE / (float)CONFIG_SAMPLE_RATE;
+  s->rate_scale = R;
+  s->env_div = (uint16_t)(10.0f / R + 0.5f); if (s->env_div < 1) s->env_div = 1;
+  s->tempo_base = (uint32_t)(500.0f / R + 0.5f);
+  s->vcf_atk_alpha = 1.0f - powf(0.85f, R);
+  s->accent_lp_attack = 1.0f - powf(1.0f - 0.0404f, R);
+  s->accent_lp_decay = 1.0f - powf(1.0f - 0.404f, R);
+  s->vca_delay_decay = powf(0.9998f, R);
+  s->vca_charge_inc = 0.002f * R;
+  s->vca_atk_mul = powf(1.076f, R);
+  s->vca_atk_inc = 0.0076f * R;
+  s->vca_release_mul = powf(0.996f, R);
+  s->vca_decay0 = powf(0.99991f, R);
+  s->vcf_decay_accent = powf(0.9972f, R);
+  const float ts = 1.0f / (4.0f * (float)CONFIG_SAMPLE_RATE);  // filter step
   s->k0 = 1.47f; s->k1 = 0.2876302f; s->k2 = 0.0797963f;
   s->k3 = 0.0654076f; s->k4 = 0.0072146f; s->k5 = 0.0013524f;
-  s->k6 = Ts * 6.283f * HPF_Q * HPF_W;
-  s->k10 = Ts * 6.283f * HPF_W / HPF_Q;
-  s->k7 = 0.00785f; s->k8 = 0.0204f;
-  s->vca_env_decay = 0.99991f; s->vcf_env_decay = 0.9972f;
+  s->k6 = ts * 6.283f * HPF_Q * HPF_W;
+  s->k10 = ts * 6.283f * HPF_W / HPF_Q;
+  s->k7 = 0.00785f * R; s->k8 = 0.0204f * R;
+  s->vca_env_decay = s->vca_decay0; s->vcf_env_decay = s->vcf_decay_accent;
   s->k11 = 0.0018f; s->k12 = 0.00143f;
   s->k13 = s->k11 / 10.0f; s->k14 = s->k12 / 10.0f;
-  s->slide_resistor = 0.00909f; s->slide_timer = 0xff;
+  s->slide_resistor = 1.0f - powf(1.0f - 0.00909f, R); s->slide_timer = 0xff;
   s->tune = TUNE_TRIM_STEPS;
   s->midi_note = 0xff; s->prev_midi_note = 0xff;  // 0xff = none (packed 0 is a note)
   s->freq = 100;
@@ -73,6 +95,10 @@ void tb303_set_controls(TB303 *s, uint16_t accent, uint16_t reso,
   s->k14 = 0.000168f - 0.000000045f * half;
   s->k13 = 0.000165f - 0.0000000675f * half;
   s->k12 = 10.0f * s->k14; s->k11 = 10.0f * s->k13;
+  // Accent-cap gains are per-sample integrator steps: scale with step size.
+  // (k15 is a dimensionless mix ratio and stays unscaled.)
+  s->k11 *= s->rate_scale; s->k12 *= s->rate_scale;
+  s->k13 *= s->rate_scale; s->k14 *= s->rate_scale;
   s->cutoff = 0.332f * cutoff + 328.0f;
   s->env_mod = 0.16667f + 0.0008138f * env_mod;
   s->pot_decay = decay; s->waveform = waveform;
@@ -89,7 +115,7 @@ static void apply_note(TB303 *s, uint8_t packed, uint8_t prev_packed, uint8_t fo
     if (tn > 4094) tn = 4094;
     s->sq_note = (uint16_t)((tn >> 6) & 0x003f);
     uint16_t interim = note_table[tn];
-    s->freq = (uint32_t)interim << 10;
+    s->freq = (uint32_t)((float)(interim << 10) * s->rate_scale);
     s->freq_offset = (uint16_t)(interim >> 3);
     s->threshold = (uint16_t)(interim >> 2);
     s->freq_inv = note_table[tn + 1];
@@ -98,9 +124,9 @@ static void apply_note(TB303 *s, uint8_t packed, uint8_t prev_packed, uint8_t fo
     s->slide_timer = 0;                       // legato: slide, no retrigger
   }
   if ((packed & 0x40) == 0) {
-    s->accent = 0; s->vcf_env_decay = decay_table[s->pot_decay & 0x3ff];
+    s->accent = 0; s->vcf_env_decay = powf(decay_table[s->pot_decay & 0x3ff], s->rate_scale);
   } else {
-    s->accent = s->accent_amount; s->vcf_env_decay = 0.9972f;
+    s->accent = s->accent_amount; s->vcf_env_decay = s->vcf_decay_accent;
   }
 }
 
@@ -198,71 +224,73 @@ static float render_body(TB303 *s, int16_t *dac_out) {
     s->timer2 = 0;
     int16_t t5 = (int16_t)(s->cutoff + 615.0f * (s->vcf_env - 0.326f) * s->env_mod + 1353.0f * s->accent_vcf);
     if (t5 < 0) t5 = 0; if (t5 > 1023) t5 = 1023; t5 = (int16_t)(t5 * 6);
-    s->k1 = cv_table[t5]; s->k2 = cv_table[t5 + 1]; s->k3 = cv_table[t5 + 2];
-    s->k4 = cv_table[t5 + 3]; s->k5 = cv_table[t5 + 4]; s->k0 = cv_table[t5 + 5];
+    // Table gains are per-5us-step integrators: scale to the actual step.
+    const float rs = s->rate_scale;
+    s->k1 = cv_table[t5] * rs; s->k2 = cv_table[t5 + 1] * rs; s->k3 = cv_table[t5 + 2] * rs;
+    s->k4 = cv_table[t5 + 3] * rs; s->k5 = cv_table[t5 + 4] * rs; s->k0 = cv_table[t5 + 5] * rs;
   }
 
   // VCF envelope + accent (attack / decay / release as in myISR)
   if (s->vcf_env_state == 1) {
-    s->vcf_env += 0.15f * (1.0f - s->vcf_env);
+    s->vcf_env += s->vcf_atk_alpha * (1.0f - s->vcf_env);
     if (s->vcf_env > 0.99998f) { s->vcf_env = 0.99998f; s->vcf_env_state = 2; s->vcf_env_timer1 = 0; }
     float t2 = s->accent * s->vcf_env - 0.362f - s->accent_cap1;
     if (t2 > 0) { s->accent_cap1 += s->k13 * t2 - s->k14 * s->accent_cap1; s->accent_vcf = s->k15 * t2 + s->accent_cap1; }
     else { s->accent_cap1 -= s->k14 * s->accent_cap1; s->accent_vcf = s->accent_cap1; }
-    s->accent_cap2 += 0.0404f * (s->accent * s->vcf_env - s->accent_cap2);
+    s->accent_cap2 += s->accent_lp_attack * (s->accent * s->vcf_env - s->accent_cap2);
     s->accent_vca = s->accent_cap2 > 0.09f ? s->accent_cap2 - 0.09f : 0;
   } else if (s->vcf_env_state == 2) {
-    if (++s->vcf_env_timer1 == 10) {
+    if (++s->vcf_env_timer1 == s->env_div) {
       s->vcf_env_timer1 = 0; s->vcf_env *= s->vcf_env_decay;
       if (s->vcf_env < 0.000015f) { s->vcf_env = 0; s->vcf_env_state = 3; }
       float t2 = s->accent * s->vcf_env - 0.362f - s->accent_cap1;
       if (t2 > 0) { s->accent_cap1 += s->k11 * t2 - s->k12 * s->accent_cap1; s->accent_vcf = s->k15 * t2 + s->accent_cap1; }
       else { s->accent_cap1 -= s->k12 * s->accent_cap1; s->accent_vcf = s->accent_cap1; }
-      s->accent_cap2 += 0.404f * (s->accent * s->vcf_env - s->accent_cap2);
+      s->accent_cap2 += s->accent_lp_decay * (s->accent * s->vcf_env - s->accent_cap2);
       s->accent_vca = s->accent_cap2 > 0.09f ? s->accent_cap2 - 0.09f : 0;
     }
   } else if (s->vcf_env_state == 3) {
-    if (++s->vcf_env_timer1 == 10) {
+    if (++s->vcf_env_timer1 == s->env_div) {
       s->vcf_env_timer1 = 0; s->accent_cap1 -= s->k12 * s->accent_cap1; s->accent_vcf = s->accent_cap1;
       if (s->accent_vcf < 0.000015f) { s->accent_vcf = 0; s->vcf_env_state = 0; }
     }
   } else s->vcf_env = 0;
 
   // VCA envelope
-  if (s->vca_env_state == 0) { s->vca_env = 0; s->vca_delay_cap *= 0.9998f; }
+  if (s->vca_env_state == 0) { s->vca_env = 0; s->vca_delay_cap *= s->vca_delay_decay; }
   else if (s->vca_env_state == 1) {
-    s->vca_delay_cap += 0.002f;
+    s->vca_delay_cap += s->vca_charge_inc;
     if (s->vca_delay_cap > 0.4828f) {
-      s->vca_delay_cap = 0.565f; s->vca_env = s->vca_env * 1.076f + 0.0076f;
-      if (s->vca_env > 0.99998f) { s->vca_env = 0.99998f; s->vca_env_state = 2; s->vca_env_timer1 = s->vca_env_timer2 = 0; s->vca_env_decay = 0.99991f; }
+      s->vca_delay_cap = 0.565f; s->vca_env = s->vca_env * s->vca_atk_mul + s->vca_atk_inc;
+      if (s->vca_env > 0.99998f) { s->vca_env = 0.99998f; s->vca_env_state = 2; s->vca_env_timer1 = s->vca_env_timer2 = 0; s->vca_env_decay = s->vca_decay0; }
     }
   } else if (s->vca_env_state == 2) {
-    if (++s->vca_env_timer1 == 10) {
+    if (++s->vca_env_timer1 == s->env_div) {
       s->vca_env_timer1 = 0; s->vca_env *= s->vca_env_decay;
-      if (++s->vca_env_timer2 == 100) { s->vca_env_timer2 = 0; s->vca_env_decay -= 0.000001f; }
+      if (++s->vca_env_timer2 == (uint8_t)(s->env_div * 10)) { s->vca_env_timer2 = 0; s->vca_env_decay -= 0.000001f * s->rate_scale; }
       if (s->vca_env < 0.000015f) { s->vca_env = 0; s->vca_env_state = 0; }
     }
   } else if (s->vca_env_state == 3) {
     // Release decays exponentially to zero (the original code's
     // last_vca_env was never assigned, so it always targeted 0).
-    s->vca_delay_cap *= 0.9998f; s->vca_env *= 0.996f;
+    s->vca_delay_cap *= s->vca_delay_decay; s->vca_env *= s->vca_release_mul;
     if (s->vca_env <= 0.000015f) { s->vca_env = 0; s->vca_env_state = 0; }
   }
 
   // slide
-  if (s->slide_timer != 0xff && ++s->slide_timer == 10) {
+  if (s->slide_timer != 0xff && ++s->slide_timer == s->env_div) {
     s->slide_timer = 0;
     s->slide_cap += s->slide_resistor * ((float)s->current_note_value - s->slide_cap);
     uint16_t tn = (uint16_t)((uint16_t)s->slide_cap + s->tune);
     if (tn > 4094) tn = 4094;
     s->sq_note = (uint16_t)((tn >> 6) & 0x003f);
     uint16_t interim = note_table[tn];
-    s->freq = (uint32_t)interim << 10; s->freq_offset = (uint16_t)(interim >> 3);
+    s->freq = (uint32_t)((float)(interim << 10) * s->rate_scale); s->freq_offset = (uint16_t)(interim >> 3);
     s->threshold = (uint16_t)(interim >> 2); s->freq_inv = note_table[tn + 1];
   }
 
   // internal sequencer (free-running when no external MIDI clock)
-  if (!s->ext_clock && ++s->tempo_counter >= 500) {
+  if (!s->ext_clock && ++s->tempo_counter >= s->tempo_base) {
     s->tempo_counter = 0;
     if (++s->step_counter >= 12) {
       s->step_counter = 0;

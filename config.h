@@ -26,11 +26,13 @@
 #define CONFIG_MIDI_ECHO_CLOCK 0  // forward received clock/start/stop to MIDI out.
 
 // ---------- Sample rate ----------
-// Filter tables (303filt_coeff_5us.h) are tuned for a 5 us filter step:
-// 4 filter iterations per output sample at 50 kHz. Changing the rate
-// detunes cutoff/envelope timing; keep 50000 unless you retune tables.
+// Tables are tuned at 50 kHz (5 us filter step, 4 iterations/sample);
+// tb303_init derives every per-sample constant for other rates
+// (integrator gains, decay multipliers, timers, pitch increments).
+// This branch defaults to the standard 48 kHz. SAMD51 stays at 50 kHz
+// (see platformio.ini): its microsecond timer cannot express 20.83 us.
 #ifndef CONFIG_SAMPLE_RATE
-#  define CONFIG_SAMPLE_RATE 50000
+#  define CONFIG_SAMPLE_RATE 48000
 #endif
 
 // ---------- ESP32 pins (auto-selected per chip; override any below) ----------

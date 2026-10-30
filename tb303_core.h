@@ -33,6 +33,13 @@ typedef struct {
   float resonance, average, last_average, accent_amount, env_mod, cutoff;
   uint16_t pot_decay; uint8_t waveform; int16_t tune;
   uint8_t timer2;
+  // sample-rate derived constants (see tb303_init; REF = 50 kHz tuning)
+  float rate_scale;          // 50000 / CONFIG_SAMPLE_RATE
+  float vcf_atk_alpha, accent_lp_attack, accent_lp_decay;
+  float vca_delay_decay, vca_charge_inc, vca_atk_mul, vca_atk_inc;
+  float vca_release_mul, vca_decay0, vcf_decay_accent;
+  uint16_t env_div;          // envelope sub-rate divisor (10 at 50 kHz)
+  uint32_t tempo_base;       // sequencer counts per sub-step (500 at 50 kHz)
   // sequencer / note state
   uint32_t tempo_counter, freq; uint8_t step_counter, current_step;
   uint8_t current_note; int16_t current_note_value;
