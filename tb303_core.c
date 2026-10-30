@@ -132,6 +132,7 @@ static void apply_note(TB303 *s, uint8_t packed, uint8_t prev_packed, uint8_t fo
 
 // MIDI note -> packed 303 note (note-MIDI_NOTE_OFFSET | accent<<6 | slide<<7).
 void tb303_note_on(TB303 *s, uint8_t midi_note, uint8_t velocity) {
+  s->ext_control = 1;  // external control is sticky: internal sequencer stays off
   uint8_t packed = (uint8_t)((midi_note - MIDI_NOTE_OFFSET) & 0x3f);
   if (velocity > 64) packed |= 1 << 6;
   uint8_t prev = s->midi_note;
@@ -289,8 +290,9 @@ static float render_body(TB303 *s, int16_t *dac_out) {
     s->threshold = (uint16_t)(interim >> 2); s->freq_inv = note_table[tn + 1];
   }
 
-  // internal sequencer (free-running when no external MIDI clock)
-  if (!s->ext_clock && ++s->tempo_counter >= s->tempo_base) {
+  // internal sequencer: plays only until external control (notes or
+  // clock) takes over; from then on the engine is externally owned.
+  if (!s->ext_clock && !s->ext_control && ++s->tempo_counter >= s->tempo_base) {
     s->tempo_counter = 0;
     if (++s->step_counter >= 12) {
       s->step_counter = 0;
@@ -316,7 +318,7 @@ float tb303_render_float(TB303 *s) {
 }
 
 void tb303_clock(TB303 *s, uint8_t msg) {
-  if (msg == 0xFA) { s->ext_clock = 1; s->pulse_counter = 0; s->current_step = 0; }
+  if (msg == 0xFA) { s->ext_clock = 1; s->ext_control = 1; s->pulse_counter = 0; s->current_step = 0; }
   else if (msg == 0xFC) { s->ext_clock = 0; s->pulse_counter = 0; s->vca_env_state = 3; }
   else if (msg == 0xF8 && s->ext_clock) {
     if (++s->pulse_counter >= s->pulses_per_step) {

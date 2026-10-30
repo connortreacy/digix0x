@@ -46,6 +46,7 @@ typedef struct {
   const uint8_t *sequence; uint8_t sequence_length;
   // external MIDI state
   uint8_t midi_note, prev_midi_note, pulse_counter; uint8_t ext_clock;
+  uint8_t ext_control;  // latched: external notes/clock own the engine (internal seq off)
   uint8_t pulses_per_step, pulses_per_note;
 } TB303;
 
