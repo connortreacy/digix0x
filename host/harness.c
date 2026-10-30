@@ -51,9 +51,18 @@ static void run_pattern(int loops, double bpm, int sweep) {
       if (note == 0) {
         if (held >= 0 && !slide) { note_off(held); held = -1; }
       } else {
+        int prev = held;
         if (held >= 0 && !slide) note_off(held);
         note_on(note + MIDI_OFFSET, accent ? 110 : 50);
         held = note + MIDI_OFFSET;
+        if (slide && prev >= 0) {
+          // slid-from note offs just after the on (as in the .mid file),
+          // otherwise it orphans in the core's legato stack
+          usleep(12000);
+          note_off(prev);
+          usleep((useconds_t)(step_s * 1e6) - 12000);
+          continue;
+        }
       }
       // Notes gate until the next step (303-style); rests and non-slide
       // steps note-off at the next step boundary in the code above.

@@ -14,15 +14,15 @@ static Adafruit_ZeroI2S i2s_out;
 #endif
 
 static TB303 *g_synth;
-static MidiEvent g_mq[32];
+static MidiEvent g_mq[64];
 static volatile uint8_t g_mq_head, g_mq_tail;
 static void mq_push(MidiEvent e) {
-  uint8_t n = (g_mq_head + 1) & 31;
+  uint8_t n = (g_mq_head + 1) & 63;
   if (n != g_mq_tail) { g_mq[g_mq_head] = e; g_mq_head = n; }
 }
 bool platform_midi_next(MidiEvent *e) {
   if (g_mq_tail == g_mq_head) return false;
-  *e = g_mq[g_mq_tail]; g_mq_tail = (g_mq_tail + 1) & 31; return true;
+  *e = g_mq[g_mq_tail]; g_mq_tail = (g_mq_tail + 1) & 63; return true;
 }
 
 // Running-status UART MIDI parser (Serial1, 31250 baud).

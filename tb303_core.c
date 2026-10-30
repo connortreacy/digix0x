@@ -136,6 +136,16 @@ void tb303_note_on(TB303 *s, uint8_t midi_note, uint8_t velocity) {
   uint8_t packed = (uint8_t)((midi_note - MIDI_NOTE_OFFSET) & 0x3f);
   if (velocity > 64) packed |= 1 << 6;
   uint8_t prev = s->midi_note;
+  if (prev != 0xff && s->prev_midi_note != 0xff) {
+    // Stack already full (current + held previous): a third overlapping
+    // note almost always means a slid-from note was never released.
+    // Drop the oldest and retrigger instead of locking into legato
+    // (which decays to permanent silence). Two-note slides unaffected.
+    s->prev_midi_note = 0xff;
+    s->midi_note = packed;
+    apply_note(s, packed, 0, 1);
+    return;
+  }
   if (prev != 0xff) packed |= 1 << 7;
   s->prev_midi_note = prev; s->midi_note = packed;
   apply_note(s, packed, prev == 0xff ? 0 : prev, 1);  // 0 = no previous: attack
