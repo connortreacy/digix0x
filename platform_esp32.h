@@ -20,6 +20,7 @@ static const uint8_t g_latch_cc[5] = {MIDI_CC_ACCENT, MIDI_CC_RESO, MIDI_CC_CUTO
                                       MIDI_CC_DECAY, MIDI_CC_ENVMOD};
 static volatile uint16_t g_cc_shadow[128];
 static volatile uint8_t g_cc_dirty[128];
+static volatile int8_t g_cc_wave = -1;  // CC waveform override (-1 = follow switch)
 
 static TB303 *g_synth;
 static MidiEvent g_mq[64];
@@ -74,7 +75,8 @@ static void audio_task(void *) {
         case MIDI_EV_START: tb303_clock(g_synth, 0xFA); break;
         case MIDI_EV_STOP: tb303_clock(g_synth, 0xFC); break;
         case MIDI_EV_CC:  // staged for the latch in platform_poll_midi()
-          if (e.cc < 128) { g_cc_shadow[e.cc] = (uint16_t)(e.value << 3); g_cc_dirty[e.cc] = 1; }
+          if (e.cc == MIDI_CC_WAVEFORM) g_cc_wave = e.value >= 64 ? 1 : 0;
+          else if (e.cc < 128) { g_cc_shadow[e.cc] = (uint16_t)(e.value << 3); g_cc_dirty[e.cc] = 1; }
           break;
         default: break;
       }
@@ -172,7 +174,11 @@ void platform_poll_midi() {  // runs on Core 0 from loop()
   v[0] = latch_pot(&g_latch[0], v[0]); v[1] = latch_pot(&g_latch[1], v[1]);
   v[2] = latch_pot(&g_latch[2], v[2]); v[3] = latch_pot(&g_latch[3], v[3]);
   v[4] = latch_pot(&g_latch[4], v[4]);
-  Controls c = {v[0], v[1], v[2], v[3], v[4], (uint8_t)digitalRead(ESP32_PIN_WAVE_SW)};
+  static uint8_t last_sw = 0xff;
+  uint8_t sw = (uint8_t)digitalRead(ESP32_PIN_WAVE_SW);
+  if (sw != last_sw) { last_sw = sw; g_cc_wave = -1; }  // physical switch re-takes
+  if (g_cc_wave >= 0) sw = (uint8_t)g_cc_wave;
+  Controls c = {v[0], v[1], v[2], v[3], v[4], sw};
   // Field-wise compare: memcmp would also test struct padding bytes.
   if (c.accent != g_controls.accent || c.reso != g_controls.reso ||
       c.cutoff != g_controls.cutoff || c.decay != g_controls.decay ||

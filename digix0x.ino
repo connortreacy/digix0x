@@ -14,6 +14,8 @@ static TB303 synth;
 static ControlLatch g_latch[5];
 static const uint8_t g_latch_cc[5] = {MIDI_CC_ACCENT, MIDI_CC_RESO, MIDI_CC_CUTOFF,
                                       MIDI_CC_DECAY, MIDI_CC_ENVMOD};
+static int8_t g_cc_wave = -1;   // CC waveform override (-1 = follow switch)
+static uint8_t g_last_sw = 0xff;
 #endif
 
 #if defined(PLATFORM_SAMD51)
@@ -44,6 +46,7 @@ void loop() {
       case MIDI_EV_CC:
         for (int i = 0; i < 5; i++)
           if (e.cc == g_latch_cc[i]) latch_cc(&g_latch[i], (uint16_t)(e.value << 3));
+        if (e.cc == MIDI_CC_WAVEFORM) g_cc_wave = e.value >= 64 ? 1 : 0;
         break;
       default: break;
     }
@@ -59,6 +62,8 @@ void loop() {
   c.cutoff = latch_pot(&g_latch[2], c.cutoff);
   c.decay = latch_pot(&g_latch[3], c.decay);
   c.env_mod = latch_pot(&g_latch[4], c.env_mod);
+  if (c.waveform != g_last_sw) { g_last_sw = c.waveform; g_cc_wave = -1; }  // switch re-takes
+  if (g_cc_wave >= 0) c.waveform = (uint8_t)g_cc_wave;
   tb303_set_controls(&synth, c.accent, c.reso, c.cutoff, c.decay, c.env_mod, c.waveform);
 #else
   // ESP32: audio task (Core 1) drains the queue and applies controls;

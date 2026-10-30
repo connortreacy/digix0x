@@ -83,6 +83,13 @@ static void midi_read(const MIDIPacketList *list, void *ref, void *src) {
       uint8_t cmd = st & 0xF0;
       if (cmd == 0x90 || cmd == 0x80 || cmd == 0xB0 || cmd == 0xE0) {
         uint8_t d1 = pkt->data[b + 1], d2 = pkt->data[b + 2];
+        if (cmd == 0xB0) {  // panel CCs incl. waveform (CC70), mirrors firmware map
+          static const uint8_t ccmap[5] = {77, 71, 74, 76, 75};
+          if (d1 == 70) { g_wave = d2 >= 64 ? 1 : 0; apply_controls(); }
+          else for (int i = 0; i < 5; i++)
+            if (d1 == ccmap[i]) { g_pot[i] = (uint16_t)(d2 << 3); apply_controls(); }
+          b += 3; continue;
+        }
         pthread_mutex_lock(&g_lock);
         if (cmd == 0x90 && d2 > 0) tb303_note_on(&g_synth, d1, d2);
         else if (cmd == 0x80 || cmd == 0x90) tb303_note_off(&g_synth, d1);

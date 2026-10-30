@@ -104,7 +104,7 @@ The `303wavs/` folder holds raw VCO captures from a real 303 (saw + square, MIDI
 
 -   **Patterns:** edit the pattern headers (`everybody303.h` is the default; `default.h`, `riser.h` are alternates) or call `tb303_set_sequence()` at runtime. Pattern bytes are `note | accent<<6 | slide<<7`, note 0 = rest.
 -   **I/O selection:** everything lives in `config.h` — audio out (DAC / I2S / both), MIDI sources (USB / UART), sample rate, and all pin assignments (ESP32 defaults auto-select per chip).
--   **MIDI control:** CC 71/74/75/76/77 drive Resonance/Cutoff/Env-Mod/Decay/Accent until the matching physical pot moves; velocity > 64 accents; overlapping notes slide.
+-   **MIDI control:** CC 71/74/75/76/77 drive Resonance/Cutoff/Env-Mod/Decay/Accent with pot pickup (a pot re-takes its parameter when swept through the live value); CC 70 switches waveform (<64 saw, ≥64 square, physical switch re-takes on toggle); velocity > 64 accents; overlapping notes slide.
 -   **Filter/envelope behaviour:** coefficients and tables are in `303filt_coeff_5us.h` and `303_vcf_decay_table.h` — see the tuning/validation notes above before touching them.
 -   **Trying sounds without hardware:** the Mac simulator (`host/sim.c`) and offline renders (`make -C host test`) run the identical engine.
 

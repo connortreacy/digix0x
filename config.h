@@ -91,3 +91,4 @@
 #define MIDI_CC_ENVMOD 75
 #define MIDI_CC_DECAY  76
 #define MIDI_CC_ACCENT 77
+#define MIDI_CC_WAVEFORM 70  // <64 = saw, >=64 = square; physical switch re-takes on toggle
